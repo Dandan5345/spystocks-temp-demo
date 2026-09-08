@@ -1,6 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const ui = {
   insider: {
+    label: 'Insiders',
     eyebrow: 'INSIDER INTELLIGENCE · OFFICIAL FILINGS',
     title: 'Know the person<br/><span>behind the trade.</span>',
     copy: 'Search any SEC reporting owner. We resolve the person, rebuild their career footprint and decode Forms 3, 4 and 5 directly from EDGAR.',
@@ -10,6 +11,7 @@ const ui = {
     quick: ['Jensen Huang', 'Lisa Su', 'Satya Nadella']
   },
   politician: {
+    label: 'Politicians',
     eyebrow: 'CONGRESSIONAL INTELLIGENCE · OFFICIAL RECORDS',
     title: 'Follow the person<br/><span>behind the policy.</span>',
     copy: 'Search current and former members of Congress. Explore verified identity, service history and legislation directly from Congress.gov.',
@@ -19,6 +21,7 @@ const ui = {
     quick: ['Nancy Pelosi', 'Tommy Tuberville', 'Bernie Sanders']
   },
   institution: {
+    label: 'Institutions',
     eyebrow: 'INSTITUTIONAL INTELLIGENCE · SEC FORM 13F',
     title: 'See where the<br/><span>big money moves.</span>',
     copy: 'Search institutional investment managers and explore their latest SEC-reported holdings, portfolio changes and quarterly Form 13F history.',
@@ -29,7 +32,11 @@ const ui = {
   }
 };
 
-let mode = 'insider';
+// Institutions are hidden for now. Add 'institution' back to this list to restore
+// the tab, its search mode and the /institution/:cik route - nothing else changes.
+const enabledModes = ['insider', 'politician'];
+
+let mode = enabledModes[0];
 let allTransactions = [];
 let searchTimer;
 let searchAbort = null;
@@ -98,11 +105,21 @@ async function cachedApi(url, ttlMs, {session = false} = {}) {
   return request;
 }
 
+// Drops the tabs for modes that are switched off and tells the CSS how many
+// columns the segmented control and its sliding indicator should span.
+function pruneDisabledTabs() {
+  const strip = document.querySelector('.person-tabs');
+  strip.querySelectorAll('.person-tab').forEach(tab => {
+    if (!enabledModes.includes(tab.dataset.mode)) tab.remove();
+  });
+  strip.style.setProperty('--tab-count', enabledModes.length);
+}
+
 function setMode(nextMode, {focus = true} = {}) {
   insiderLoadId += 1;
   pageLoadId += 1;
   activePolitician = null;
-  mode = nextMode;
+  mode = enabledModes.includes(nextMode) ? nextMode : enabledModes[0];
   const content = ui[mode];
   document.querySelectorAll('.person-tab').forEach(tab => {
     const active = tab.dataset.mode === mode;
@@ -110,7 +127,8 @@ function setMode(nextMode, {focus = true} = {}) {
     tab.setAttribute('aria-selected', String(active));
   });
   document.querySelectorAll('.compact-tabs').forEach(node => {
-    node.innerHTML = `<button data-compact-mode="insider" class="${mode === 'insider' ? 'active' : ''}">Insiders</button><button data-compact-mode="politician" class="${mode === 'politician' ? 'active' : ''}">Politicians</button><button data-compact-mode="institution" class="${mode === 'institution' ? 'active' : ''}">Institutions</button>`;
+    node.innerHTML = enabledModes.map(key => `<button data-compact-mode="${key}" class="${mode === key ? 'active' : ''}">${esc(ui[key].label)}</button>`).join('');
+    node.style.setProperty('--tab-count', enabledModes.length);
   });
   $('eyebrow').textContent = content.eyebrow;
   $('heroTitle').innerHTML = content.title;
@@ -814,7 +832,7 @@ window.addEventListener('popstate', routeFromLocation);
 function routeFromLocation() {
   const whitehouse = location.pathname.match(/^\/politician\/whitehouse\/([a-z0-9-]+)\/?$/);
   const politician = location.pathname.match(/^\/politician\/([A-Za-z]\d{6})\/?$/);
-  const institution = location.pathname.match(/^\/institution\/(\d+)\/?$/);
+  const institution = enabledModes.includes('institution') ? location.pathname.match(/^\/institution\/(\d+)\/?$/) : null;
   const insider = location.pathname.match(/^\/insider\/(\d+)\/?$/);
   if (whitehouse) loadPolitician('whitehouse:' + whitehouse[1], {push: false});
   else if (politician) loadPolitician(politician[1], {push: false});
@@ -823,5 +841,6 @@ function routeFromLocation() {
   else setMode(mode, {focus: false});
 }
 
-setMode('insider', {focus: false});
+pruneDisabledTabs();
+setMode(enabledModes[0], {focus: false});
 routeFromLocation();

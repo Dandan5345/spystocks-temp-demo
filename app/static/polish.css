@@ -19,13 +19,13 @@ body{min-height:100dvh;-webkit-tap-highlight-color:transparent;font-family:"Aven
 .topbar{padding-left:max(14px,env(safe-area-inset-left));padding-right:max(14px,env(safe-area-inset-right))}
 
 /* Segmented control: one sliding pill instead of three separately shaded buttons. */
-.person-tabs,.compact-tabs{position:relative;display:grid;grid-template-columns:repeat(3,1fr);gap:0;padding:4px;border-radius:12px;width:100%;max-width:420px}
-.compact-tabs{max-width:340px;border-radius:10px;padding:3px}
+.person-tabs,.compact-tabs{position:relative;display:grid;grid-template-columns:repeat(var(--tab-count,3),1fr);gap:0;padding:4px;border-radius:12px;width:100%;max-width:calc(var(--tab-count,3) * 140px)}
+.compact-tabs{max-width:calc(var(--tab-count,3) * 113px);border-radius:10px;padding:3px}
 .person-tab,.compact-tabs button{position:relative;z-index:1;text-transform:none;letter-spacing:0;font-size:.85rem;font-weight:600;padding:11px 8px;border-radius:9px;white-space:nowrap}
 .compact-tabs button{font-size:.78rem;padding:9px 6px}
 @supports selector(:has(*)){
-  .person-tabs::after,.compact-tabs::after{content:"";position:absolute;z-index:0;top:4px;bottom:4px;left:4px;width:calc((100% - 8px)/3);border-radius:9px;background:var(--raised);transition:transform .34s cubic-bezier(.22,1,.36,1)}
-  .compact-tabs::after{top:3px;bottom:3px;left:3px;width:calc((100% - 6px)/3)}
+  .person-tabs::after,.compact-tabs::after{content:"";position:absolute;z-index:0;top:4px;bottom:4px;left:4px;width:calc((100% - 8px)/var(--tab-count,3));border-radius:9px;background:var(--raised);transition:transform .34s cubic-bezier(.22,1,.36,1)}
+  .compact-tabs::after{top:3px;bottom:3px;left:3px;width:calc((100% - 6px)/var(--tab-count,3))}
   .person-tabs:has(>.person-tab:nth-of-type(2).active)::after,.compact-tabs:has(>button:nth-of-type(2).active)::after{transform:translateX(100%)}
   .person-tabs:has(>.person-tab:nth-of-type(3).active)::after,.compact-tabs:has(>button:nth-of-type(3).active)::after{transform:translateX(200%)}
   .person-tabs>.person-tab.active,.compact-tabs>button.active{background:transparent}
