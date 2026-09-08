@@ -123,7 +123,12 @@ async def ensure_cik_lookup() -> Path:
     max_age = int(os.getenv("CIK_CACHE_HOURS", "24")) * 3600
     if CIK_CACHE.exists() and time.time() - CIK_CACHE.stat().st_mtime < max_age:
         return CIK_CACHE
-    text = await sec_get(CIK_LOOKUP_URL)
+    try:
+        text = await sec_get(CIK_LOOKUP_URL)
+    except Exception:
+        if CIK_CACHE.exists():
+            return CIK_CACHE
+        raise
     CIK_CACHE.write_text(text, encoding="latin-1")
     return CIK_CACHE
 

@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from .congress_client import CongressError, congress_client
 from .disclosure_client import DisclosureError, disclosure_client
 from .institution_client import InstitutionError, institution_client
-from .sec_client import build_profile, build_profile_overview, search_cik
+from .sec_client import build_profile, build_profile_overview, ensure_cik_lookup, search_cik
 from .whitehouse_client import WhiteHouseError, whitehouse_client
 from .wikipedia_client import wikipedia_knowledge
 from .organization_knowledge import knowledge as organization_knowledge
@@ -22,6 +22,15 @@ STATIC = BASE / "static"
 
 @asynccontextmanager
 async def lifespan(app):
+    # Render instances start with an empty ephemeral data directory after a deploy.
+    # Prepare the SEC name lookup before accepting traffic so the first visitor does
+    # not pay for a ~40 MB download inside their search request.
+    try:
+        await ensure_cik_lookup()
+    except Exception:
+        # Keep the app available if SEC is temporarily unreachable; the normal search
+        # path will retry and can still use a stale file when one exists.
+        pass
     yield
     await snapshots.close()
 
