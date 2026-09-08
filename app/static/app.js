@@ -5,6 +5,7 @@ const ui = {
     title: 'Know the person<br/><span>behind the trade.</span>',
     copy: 'Search any SEC reporting owner. We resolve the person, rebuild their career footprint and decode Forms 3, 4 and 5 directly from EDGAR.',
     placeholder: 'Try: Jensen Huang, Lisa Su, or a random insider…',
+    shortPlaceholder: 'Search an SEC insider…',
     source: 'Live from SEC EDGAR',
     quick: ['Jensen Huang', 'Lisa Su', 'Satya Nadella']
   },
@@ -13,6 +14,7 @@ const ui = {
     title: 'Follow the person<br/><span>behind the policy.</span>',
     copy: 'Search current and former members of Congress. Explore verified identity, service history and legislation directly from Congress.gov.',
     placeholder: 'Try: Nancy Pelosi, Tommy Tuberville, or any member…',
+    shortPlaceholder: 'Search a member of Congress…',
     source: 'Verified by Congress.gov',
     quick: ['Nancy Pelosi', 'Tommy Tuberville', 'Bernie Sanders']
   },
@@ -21,6 +23,7 @@ const ui = {
     title: 'See where the<br/><span>big money moves.</span>',
     copy: 'Search institutional investment managers and explore their latest SEC-reported holdings, portfolio changes and quarterly Form 13F history.',
     placeholder: 'Try: BlackRock, Berkshire Hathaway, or Citadel Advisors…',
+    shortPlaceholder: 'Search a 13F manager…',
     source: 'Verified by SEC Form 13F',
     quick: ['BlackRock', 'Berkshire Hathaway', 'Citadel Advisors']
   }
@@ -29,6 +32,11 @@ const ui = {
 let mode = 'insider';
 let allTransactions = [];
 let searchTimer;
+let searchAbort = null;
+let searchToken = 0;
+let searchPatienceTimer;
+const searchCache = new Map();
+const narrowScreen = matchMedia('(max-width: 560px)');
 let activePolitician = null;
 let insiderLoadId = 0;
 let pageLoadId = 0;
@@ -40,10 +48,12 @@ const institutionHoldingsState = {cik: null, offset: 0, items: [], total: 0};
 const esc = (s = '') => String(s).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const initials = (name = '') => name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase() || '?';
 const display = (value, fallback = '—') => value === null || value === undefined || value === '' ? fallback : value;
+// The interface is written in English, so dates stay in English too rather than
+// following the phone's locale and producing half-translated lines.
 const date = (value) => {
   if (!value) return '—';
   const parsed = new Date(value.length === 4 ? `${value}-01-01T00:00:00` : value);
-  return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleDateString(undefined, {year:'numeric', month:'short', day: value.length === 4 ? undefined : 'numeric'});
+  return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleDateString('en-US', {year:'numeric', month:'short', day: value.length === 4 ? undefined : 'numeric'});
 };
 const money = (value) => {
   if (value == null || Number.isNaN(Number(value))) return '—';
@@ -55,8 +65,8 @@ const money = (value) => {
 };
 const num = (value) => value == null ? '—' : Number(value).toLocaleString(undefined, {maximumFractionDigits: 2});
 
-async function api(url) {
-  const response = await fetch(url, {headers: {'Accept': 'application/json'}});
+async function api(url, {signal} = {}) {
+  const response = await fetch(url, {headers: {'Accept': 'application/json'}, signal});
   const data = await response.json().catch(() => ({detail: 'Unexpected server response.'}));
   if (!response.ok) throw new Error(data.detail || 'Request failed.');
   return data;
@@ -105,11 +115,11 @@ function setMode(nextMode, {focus = true} = {}) {
   $('eyebrow').textContent = content.eyebrow;
   $('heroTitle').innerHTML = content.title;
   $('heroCopy').textContent = content.copy;
-  $('searchInput').placeholder = content.placeholder;
+  $('searchInput').placeholder = narrowScreen.matches ? content.shortPlaceholder : content.placeholder;
   $('sourceLabel').textContent = content.source;
   $('quickSearch').innerHTML = `<span>Try</span>${content.quick.map(name => `<button data-q="${esc(name)}">${esc(name)}</button>`).join('')}`;
   $('searchInput').value = '';
-  $('searchResults').classList.remove('open');
+  closeSearch();
   hideProfiles();
   $('hero').classList.remove('hidden');
   $('errorBox').classList.add('hidden');
@@ -125,7 +135,7 @@ function hideProfiles() {
 }
 
 function startLoading(label) {
-  $('searchResults').classList.remove('open');
+  closeSearch();
   $('hero').classList.add('hidden');
   hideProfiles();
   $('errorBox').classList.add('hidden');
@@ -140,24 +150,101 @@ function showError(error) {
   $('errorBox').classList.remove('hidden');
 }
 
+const searchEndpoint = {
+  politician: q => '/api/politicians/search?q=' + encodeURIComponent(q),
+  institution: q => '/api/institutions/search?q=' + encodeURIComponent(q),
+  insider: q => '/api/search?q=' + encodeURIComponent(q)
+};
+
+const searchKey = (targetMode, q) => targetMode + ':' + q.toLowerCase();
+
+function closeSearch() {
+  clearTimeout(searchTimer);
+  clearTimeout(searchPatienceTimer);
+  searchToken += 1;
+  if (searchAbort) searchAbort.abort();
+  searchAbort = null;
+  const panel = $('searchResults');
+  panel.classList.remove('open', 'is-refreshing');
+}
+
+// Official records can take several seconds to resolve, so the panel always shows
+// motion while a query is in flight instead of sitting blank and looking frozen.
+function showSearchPending() {
+  const panel = $('searchResults');
+  const hasResults = panel.classList.contains('open') && panel.querySelector('.result-item');
+  if (hasResults) {
+    panel.classList.add('is-refreshing');
+    return;
+  }
+  panel.innerHTML = `<div class="search-pending" aria-live="polite">
+    <div class="search-pending-row"><span class="pending-avatar shimmer"></span><span class="pending-copy"><i class="shimmer"></i><i class="shimmer short"></i></span></div>
+    <div class="search-pending-row"><span class="pending-avatar shimmer"></span><span class="pending-copy"><i class="shimmer"></i><i class="shimmer short"></i></span></div>
+    <p class="search-pending-note" id="searchPendingNote">Searching official records…</p>
+  </div>`;
+  panel.classList.remove('is-refreshing');
+  panel.classList.add('open');
+}
+
+// Entry point for every search trigger. Feedback is painted on the same frame as
+// the keystroke; only the network call is debounced.
+function requestSearch(query, {immediate = false} = {}) {
+  const q = query.trim();
+  clearTimeout(searchTimer);
+  if (q.length < 2) {
+    closeSearch();
+    return;
+  }
+  const cached = searchCache.get(searchKey(mode, q));
+  if (cached) {
+    searchToken += 1;
+    if (searchAbort) searchAbort.abort();
+    searchAbort = null;
+    renderSearch(cached);
+    return;
+  }
+  showSearchPending();
+  if (immediate) search(q);
+  else searchTimer = setTimeout(() => search(q), 150);
+}
+
 async function search(query) {
   const q = query.trim();
   const requestedMode = mode;
   if (q.length < 2) {
-    $('searchResults').classList.remove('open');
+    closeSearch();
     return;
   }
+  const key = searchKey(requestedMode, q);
+  const cached = searchCache.get(key);
+  if (cached) {
+    renderSearch(cached);
+    return;
+  }
+  const token = ++searchToken;
+  if (searchAbort) searchAbort.abort();
+  const controller = new AbortController();
+  searchAbort = controller;
+  showSearchPending();
+  clearTimeout(searchPatienceTimer);
+  searchPatienceTimer = setTimeout(() => {
+    const note = $('searchPendingNote');
+    if (note && token === searchToken) note.textContent = 'Still searching official records — first lookups are slower.';
+  }, 2200);
   try {
-    const results = requestedMode === 'politician'
-      ? await api('/api/politicians/search?q=' + encodeURIComponent(q))
-      : requestedMode === 'institution'
-        ? await api('/api/institutions/search?q=' + encodeURIComponent(q))
-        : (await api('/api/search?q=' + encodeURIComponent(q))).results;
-    if (mode !== requestedMode || $('searchInput').value.trim() !== q) return;
+    const payload = await api(searchEndpoint[requestedMode](q), {signal: controller.signal});
+    const results = requestedMode === 'insider' ? payload.results : payload;
+    searchCache.set(key, results);
+    if (token !== searchToken || mode !== requestedMode) return;
     renderSearch(results);
   } catch (error) {
-    $('searchResults').innerHTML = `<div class="search-message"><strong>${esc(error.message)}</strong><span>Check the server configuration and try again.</span></div>`;
+    if (error.name === 'AbortError' || token !== searchToken || mode !== requestedMode) return;
+    $('searchResults').innerHTML = `<div class="search-message"><strong>${esc(error.message)}</strong><span>Check your connection and try again.</span></div>`;
+    $('searchResults').classList.remove('is-refreshing');
     $('searchResults').classList.add('open');
+  } finally {
+    clearTimeout(searchPatienceTimer);
+    if (searchAbort === controller) searchAbort = null;
   }
 }
 
@@ -183,6 +270,7 @@ function renderSearch(results) {
   } else {
     $('searchResults').innerHTML = results.map(result => `<button class="result-item" data-cik="${result.cik}"><div class="result-copy"><strong>${esc(result.name)}</strong><span>CIK ${result.cik} · ${result.score}% match</span></div><span class="result-arrow">↗</span></button>`).join('');
   }
+  $('searchResults').classList.remove('is-refreshing');
   $('searchResults').classList.add('open');
   $('searchResults').querySelectorAll('[data-cik]').forEach(node => node.onclick = () => loadInsider(node.dataset.cik));
   $('searchResults').querySelectorAll('[data-person-id]').forEach(node => node.onclick = () => loadPolitician(node.dataset.personId));
@@ -686,7 +774,7 @@ async function loadLegislation(kind, reset = false) {
 function bindDynamicControls() {
   document.querySelectorAll('[data-q]').forEach(button => button.onclick = () => {
     $('searchInput').value = button.dataset.q;
-    search(button.dataset.q);
+    requestSearch(button.dataset.q, {immediate: true});
     $('searchInput').focus();
   });
   document.querySelectorAll('[data-compact-mode]').forEach(button => button.onclick = () => {
@@ -695,14 +783,17 @@ function bindDynamicControls() {
   });
 }
 
-$('searchInput').addEventListener('input', () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => search($('searchInput').value), mode === 'politician' ? 190 : 240);
+// A pasted or autofilled name is a complete query, so it skips the typing debounce.
+$('searchInput').addEventListener('input', event => {
+  const pasted = event.inputType === 'insertFromPaste' || event.inputType === 'insertReplacementText';
+  requestSearch($('searchInput').value, {immediate: pasted});
 });
-$('searchInput').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); search($('searchInput').value); } });
+$('searchInput').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); requestSearch($('searchInput').value, {immediate: true}); } });
+$('searchInput').addEventListener('focus', () => { if ($('searchInput').value.trim().length >= 2) requestSearch($('searchInput').value, {immediate: true}); });
+narrowScreen.addEventListener('change', () => { $('searchInput').placeholder = narrowScreen.matches ? ui[mode].shortPlaceholder : ui[mode].placeholder; });
 document.querySelectorAll('.person-tab').forEach(tab => tab.onclick = () => setMode(tab.dataset.mode));
 document.querySelectorAll('[data-back]').forEach(button => button.onclick = () => { history.pushState({}, '', '/'); setMode(mode); });
-document.addEventListener('click', event => { if (!event.target.closest('.search-shell')) $('searchResults').classList.remove('open'); });
+document.addEventListener('click', event => { if (!event.target.closest('.search-shell')) closeSearch(); });
 document.querySelectorAll('[data-filter]').forEach(button => button.onclick = () => {
   document.querySelectorAll('[data-filter]').forEach(node => node.classList.remove('active'));
   button.classList.add('active');

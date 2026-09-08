@@ -12,3 +12,77 @@ button,a,select{touch-action:manipulation}button:active{transform:translateY(1px
 @media(max-width:900px){.content-grid{grid-template-columns:1fr}.hero{padding-top:42px}.source-pill{display:none}.profile-head{padding:24px}}
 @media(max-width:560px){main{width:calc(100% - 28px)}.topbar{padding:0 14px;gap:8px}.theme-control{font-size:0}.theme-control select{font-size:.75rem}.hero h1{font-size:3.35rem}.hero .person-tabs{max-width:100%}.section-card{padding:18px}.profile-head{padding:18px}.stats-grid{gap:10px}.stat{padding:16px}.knowledge-summary{font-size:.91rem}.tx-cell.value{display:block;grid-column:2}.tx{gap:8px}.identity h2{overflow-wrap:anywhere}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+/* ---- Mobile comfort and perceived speed ---- */
+html{-webkit-text-size-adjust:100%}
+body{min-height:100dvh;-webkit-tap-highlight-color:transparent;font-family:"Avenir Next",Avenir,system-ui,"Segoe UI",Roboto,"Helvetica Neue",sans-serif}
+.topbar{padding-left:max(14px,env(safe-area-inset-left));padding-right:max(14px,env(safe-area-inset-right))}
+
+/* Segmented control: one sliding pill instead of three separately shaded buttons. */
+.person-tabs,.compact-tabs{position:relative;display:grid;grid-template-columns:repeat(3,1fr);gap:0;padding:4px;border-radius:12px;width:100%;max-width:420px}
+.compact-tabs{max-width:340px;border-radius:10px;padding:3px}
+.person-tab,.compact-tabs button{position:relative;z-index:1;text-transform:none;letter-spacing:0;font-size:.85rem;font-weight:600;padding:11px 8px;border-radius:9px;white-space:nowrap}
+.compact-tabs button{font-size:.78rem;padding:9px 6px}
+@supports selector(:has(*)){
+  .person-tabs::after,.compact-tabs::after{content:"";position:absolute;z-index:0;top:4px;bottom:4px;left:4px;width:calc((100% - 8px)/3);border-radius:9px;background:var(--raised);transition:transform .34s cubic-bezier(.22,1,.36,1)}
+  .compact-tabs::after{top:3px;bottom:3px;left:3px;width:calc((100% - 6px)/3)}
+  .person-tabs:has(>.person-tab:nth-of-type(2).active)::after,.compact-tabs:has(>button:nth-of-type(2).active)::after{transform:translateX(100%)}
+  .person-tabs:has(>.person-tab:nth-of-type(3).active)::after,.compact-tabs:has(>button:nth-of-type(3).active)::after{transform:translateX(200%)}
+  .person-tabs>.person-tab.active,.compact-tabs>button.active{background:transparent}
+}
+.person-tab:active,.compact-tabs button:active{transform:none;opacity:.72}
+
+/* The results panel never goes blank: it either shimmers or dims what it already shows. */
+.search-results{max-height:min(58dvh,490px);overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+.search-pending{padding:8px 4px 4px}
+.search-pending-row{display:flex;align-items:center;gap:12px;padding:10px 12px}
+.pending-avatar{width:42px;height:42px;border-radius:12px;flex:none}
+.pending-copy{flex:1;display:grid;gap:9px}
+.pending-copy i{display:block;height:10px;border-radius:5px}
+.pending-copy i.short{width:42%}
+.search-pending-note{margin:6px 0 8px;padding:0 12px;font-size:.76rem;color:var(--quiet)}
+.search-results.is-refreshing::before{content:"";position:sticky;top:0;z-index:2;display:block;height:2px;background:var(--accent);transform-origin:left;animation:search-scan 1.15s ease-in-out infinite}
+.search-results.is-refreshing .result-item{opacity:.5}
+@keyframes search-scan{0%,100%{transform:scaleX(.12)}50%{transform:scaleX(.8)}}
+
+/* The sticky bar must not land on top of whatever we scroll to. */
+.card,.section-card,.profile,.hero,#hero{scroll-margin-top:84px}
+
+@media(pointer:coarse){
+  .person-tab,.compact-tabs button{min-height:46px}
+  .quick button,.filters button,.load-more,.source-button,.back-button{min-height:44px;display:inline-flex;align-items:center;justify-content:center}
+  .result-item{min-height:62px}
+  .theme-control select{min-height:40px}
+}
+
+@media(max-width:560px){
+  /* Search sits directly under the headline so it is reachable without scrolling. */
+  .hero{display:flex;flex-direction:column;padding:26px 0 56px}
+  .hero .person-tabs{order:1;margin:0 0 22px;max-width:100%}
+  .hero .eyebrow{order:2;margin-bottom:12px}
+  .hero h1{order:3;font-size:clamp(2.3rem,10.5vw,3.05rem);line-height:1.08;letter-spacing:-.04em;margin:0 0 22px}
+  .hero .search-shell{order:4;min-height:60px;font-size:16px}
+  .hero .quick{order:5;margin-top:16px}
+  .hero p{order:6;margin:22px 0 0;font-size:.95rem}
+  .search-shell input{font-size:16px}
+  .search-results{top:70px}
+  /* Chip rows scroll sideways instead of stacking into a tall block. */
+  .quick,.filters{display:flex;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;gap:8px;padding-bottom:2px}
+  .quick::-webkit-scrollbar,.filters::-webkit-scrollbar{display:none}
+  .quick button,.filters button{flex:none}
+  .quick>span{flex:none}
+  .section-title{flex-wrap:wrap;align-items:flex-start}
+  .section-title>div{flex:1 1 100%}
+  .theme-control select{padding:8px 6px 8px 9px;max-width:104px}
+  .brand span:not(.brand-mark){font-size:.95rem}
+  .topbar{height:58px}
+  /* The name gets the full width instead of a narrow column beside the portrait. */
+  .profile-head{flex-direction:column;align-items:flex-start;gap:16px}
+  .avatar{width:64px;height:64px}
+  .politician-avatar{width:64px;height:72px}
+  .avatar span{font-size:1.4rem}
+  .profile-tools{flex-direction:column;gap:12px;align-items:stretch;height:auto}
+  .compact-tabs{max-width:100%}
+  .compact-tabs button{font-size:.75rem;padding:9px 4px}
+  .back-button{align-self:flex-start}
+}
