@@ -188,16 +188,25 @@ def scan_cik_lookup(path: Path, query: str, limit: int) -> list[dict[str, Any]]:
     # lines. This retains the complete SEC lookup without loading a huge object graph.
     with path.open("rb") as file:
         with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as data:
-            line_starts: set[int] = set()
+            token_matches: list[set[int]] = []
             for token in q_tokens:
                 needle = token.encode("ascii")
                 position = 0
+                matches: set[int] = set()
                 while True:
                     found = data.find(needle, position)
                     if found < 0:
                         break
-                    line_starts.add(data.rfind(b"\n", 0, found) + 1)
+                    matches.add(data.rfind(b"\n", 0, found) + 1)
                     position = found + len(needle)
+                token_matches.append(matches)
+
+            # Full names normally have a tiny intersection (both LISA and SU on the
+            # same line). If the SEC legal name uses a different given name, as with
+            # Jensen/Jen Hsun Huang, the intersection is empty and we retain the union
+            # so the legal-name scorer can bridge it.
+            common_matches = set.intersection(*token_matches) if len(token_matches) > 1 else set()
+            line_starts = common_matches or set().union(*token_matches)
 
             for start in line_starts:
                 end = data.find(b"\n", start)
