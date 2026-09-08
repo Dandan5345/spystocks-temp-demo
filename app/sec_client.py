@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mmap
 import os
 import re
 import time
@@ -138,38 +139,80 @@ def parse_cik_line(line: str) -> tuple[str, str] | None:
     return match.group(1).strip(), match.group(2).zfill(10)
 
 
+def _name_match_score(query: str, name: str) -> float:
+    """Score both ordinary and SEC legal-name orderings."""
+    qnorm = normalize_name(query)
+    qparts = qnorm.split()
+    norm = normalize_name(name)
+    nparts = norm.split()
+    if not qparts or not nparts:
+        return 0.0
+    score = max((fuzz.WRatio(variant, norm) for variant in name_variants(query)), default=0.0)
+    overlap = sum(any(part.startswith(query_part) for part in nparts) for query_part in set(qparts))
+    score += min(12, overlap * 6)
+
+    # A public name can differ from EDGAR's legal name, e.g. Jensen Huang is filed
+    # as HUANG JEN HSUN. The surname anchors the match while the given names are
+    # allowed to be a prefix or a close legal-name variant.
+    public_legal_match = False
+    if len(qparts) >= 2 and len(nparts) >= 2 and qparts[-1] == nparts[0]:
+        public_first = "".join(qparts[:-1])
+        legal_first = "".join(nparts[1:])
+        given_similarity = fuzz.ratio(public_first, legal_first)
+        prefix_match = (
+            min(len(public_first), len(legal_first)) >= 3
+            and (public_first.startswith(legal_first) or legal_first.startswith(public_first))
+        )
+        if prefix_match or given_similarity >= 74:
+            public_legal_match = True
+            score += 25 + (given_similarity - 62) * 0.25
+    if overlap < len(set(qparts)) and not public_legal_match:
+        score = min(score, 86)
+    return min(score, 100)
+
+
 def scan_cik_lookup(path: Path, query: str, limit: int) -> list[dict[str, Any]]:
-    qvars = name_variants(query)
     scored: list[tuple[float, str, str]] = []
     q_tokens = set(normalize_name(query).split())
+    if not q_tokens:
+        return []
 
-    with path.open("r", encoding="latin-1", errors="ignore") as f:
-        for line in f:
-            # The lookup file is ~5.7M lines and already uppercase, so reject the
-            # overwhelming majority on a raw substring test before paying for the
-            # line regex and normalization. Normalization only ever splits on
-            # punctuation, so a token that survives it is still a substring here:
-            # this filter is a superset of the token check below, not a shortcut past it.
-            if not any(token in line for token in q_tokens):
-                continue
-            parsed = parse_cik_line(line)
-            if not parsed:
-                continue
-            name, cik = parsed
-            norm = normalize_name(name)
-            if not norm:
-                continue
-            n_tokens = set(norm.split())
-            overlap = len(q_tokens & n_tokens)
-            if overlap == 0:
-                continue
-            score = max(fuzz.WRatio(v, norm) for v in qvars)
-            if overlap == len(q_tokens):
-                score += 8
-            if norm in qvars:
-                score += 30
-            if score >= 55:
-                scored.append((score, name, cik))
+    # The fallback lookup has over a million lines. Iterating through all of them in
+    # Python took several seconds on a small production instance. mmap.find performs
+    # the broad token scan in native code, after which Python only scores matching
+    # lines. This retains the complete SEC lookup without loading a huge object graph.
+    with path.open("rb") as file:
+        with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            line_starts: set[int] = set()
+            for token in q_tokens:
+                needle = token.encode("ascii")
+                position = 0
+                while True:
+                    found = data.find(needle, position)
+                    if found < 0:
+                        break
+                    line_starts.add(data.rfind(b"\n", 0, found) + 1)
+                    position = found + len(needle)
+
+            for start in line_starts:
+                end = data.find(b"\n", start)
+                if end < 0:
+                    end = len(data)
+                line = data[start:end].decode("latin-1", errors="ignore")
+                parsed = parse_cik_line(line)
+                if not parsed:
+                    continue
+                name, cik = parsed
+                norm = normalize_name(name)
+                if not norm:
+                    continue
+                n_tokens = set(norm.split())
+                overlap = sum(any(part.startswith(token) for part in n_tokens) for token in q_tokens)
+                if overlap == 0:
+                    continue
+                score = _name_match_score(query, name)
+                if score >= 55:
+                    scored.append((score, name, cik))
 
     scored.sort(reverse=True, key=lambda x: (x[0], x[1]))
     seen = set()
@@ -187,36 +230,13 @@ def scan_cik_lookup(path: Path, query: str, limit: int) -> list[dict[str, Any]]:
 
 def rank_bulk_candidates(query: str, candidates: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     """Rank recently active owners, including common public/legal-name differences."""
-    qnorm = normalize_name(query)
-    qparts = qnorm.split()
-    qvars = name_variants(query)
     ranked: list[tuple[float, str, str]] = []
     for candidate in candidates:
         name = candidate.get("name") or ""
         cik = candidate.get("cik") or ""
-        norm = normalize_name(name)
-        nparts = norm.split()
-        score = max((fuzz.WRatio(variant, norm) for variant in qvars), default=0.0)
-        overlap = len(set(qparts) & set(nparts))
-        score += min(12, overlap * 6)
-        # EDGAR commonly stores LAST FIRST MIDDLE. This catches public short names
-        # such as Tim Cook and Jensen Huang without maintaining a hand-written alias list.
-        public_legal_match = False
-        if len(qparts) >= 2 and len(nparts) >= 2 and qparts[-1] == nparts[0]:
-            public_first = "".join(qparts[:-1])
-            legal_first = "".join(nparts[1:])
-            given_similarity = fuzz.ratio(public_first, legal_first)
-            prefix_match = (
-                min(len(public_first), len(legal_first)) >= 3
-                and (public_first.startswith(legal_first) or legal_first.startswith(public_first))
-            )
-            if prefix_match or given_similarity >= 74:
-                public_legal_match = True
-                score += 25 + (given_similarity - 62) * 0.25
-        if overlap < len(set(qparts)) and not public_legal_match:
-            score = min(score, 86)
+        score = _name_match_score(query, name)
         if score >= 70:
-            ranked.append((min(score, 100), name, cik))
+            ranked.append((score, name, cik))
     ranked.sort(reverse=True, key=lambda row: (row[0], row[1]))
     return [
         {"name": name, "cik": str(cik).zfill(10), "score": round(score, 1), "active": True}

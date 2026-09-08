@@ -98,6 +98,7 @@ def lookup_file(tmp_path):
         "COOK TIMOTHY PATRICK:0002088821:\n"
         "APPLE INC:0000320193:\n"
         "MUSK ELON:0001494730:\n"
+        "HUANG JEN HSUN:0001197649:\n"
         "SOME UNRELATED TRUST:0000999999:\n",
         encoding="latin-1",
     )
@@ -121,3 +122,9 @@ def test_search_excludes_names_sharing_no_token(lookup_file):
     names = {r["name"] for r in results}
     assert "MUSK ELON" in names
     assert "SOME UNRELATED TRUST" not in names
+
+
+def test_fallback_search_bridges_public_and_edgar_legal_names(lookup_file):
+    results = scan_cik_lookup(lookup_file, "Jensen Huang", 12)
+    assert results[0]["cik"] == "0001197649"
+    assert results[0]["score"] >= 92

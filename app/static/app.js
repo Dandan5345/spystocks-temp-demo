@@ -772,10 +772,15 @@ async function loadLegislation(kind, reset = false) {
 }
 
 function bindDynamicControls() {
-  document.querySelectorAll('[data-q]').forEach(button => button.onclick = () => {
-    $('searchInput').value = button.dataset.q;
+  document.querySelectorAll('[data-q]').forEach(button => button.onclick = event => {
+    // Quick-search buttons sit outside .search-shell. Without stopping this click,
+    // the document-level outside-click handler immediately closes the result panel
+    // and aborts the request that this button has just started.
+    event.stopPropagation();
+    const input = $('searchInput');
+    input.focus({preventScroll: true});
+    input.value = button.dataset.q;
     requestSearch(button.dataset.q, {immediate: true});
-    $('searchInput').focus();
   });
   document.querySelectorAll('[data-compact-mode]').forEach(button => button.onclick = () => {
     history.pushState({}, '', '/');
@@ -793,7 +798,9 @@ $('searchInput').addEventListener('focus', () => { if ($('searchInput').value.tr
 narrowScreen.addEventListener('change', () => { $('searchInput').placeholder = narrowScreen.matches ? ui[mode].shortPlaceholder : ui[mode].placeholder; });
 document.querySelectorAll('.person-tab').forEach(tab => tab.onclick = () => setMode(tab.dataset.mode));
 document.querySelectorAll('[data-back]').forEach(button => button.onclick = () => { history.pushState({}, '', '/'); setMode(mode); });
-document.addEventListener('click', event => { if (!event.target.closest('.search-shell')) closeSearch(); });
+document.addEventListener('click', event => {
+  if (!event.target.closest('.search-shell, #quickSearch')) closeSearch();
+});
 document.querySelectorAll('[data-filter]').forEach(button => button.onclick = () => {
   document.querySelectorAll('[data-filter]').forEach(node => node.classList.remove('active'));
   button.classList.add('active');

@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
 import sqlite3
 import tempfile
 import threading
@@ -91,6 +92,7 @@ class BulkOwnershipStore:
         self.path = Path(path)
         self._connection: sqlite3.Connection | None = None
         self._lock = threading.RLock()
+        self._search_index_enabled = False
 
     def connect(self) -> sqlite3.Connection:
         if self._connection is None:
@@ -201,7 +203,52 @@ class BulkOwnershipStore:
               ON submissions(issuer_cik, filing_date DESC);
             """
         )
+        self._ensure_search_index()
         self._connection.commit()  # type: ignore[union-attr]
+
+    @staticmethod
+    def _normalized_search_name(name: str | None) -> str:
+        return " ".join(re.sub(r"[^A-Z0-9 ]+", " ", (name or "").upper()).split())
+
+    def _ensure_search_index(self) -> None:
+        """Create a compact FTS index of unique owners for type-ahead searches.
+
+        Searching the filings table directly used to scan and group hundreds of
+        thousands of rows for every keystroke.  The index contains one row per
+        owner/name pair and supports token-prefix lookup without touching filings.
+        """
+        db = self._connection
+        if db is None:
+            return
+        try:
+            db.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS owner_search USING fts5("
+                "owner_cik UNINDEXED, owner_name UNINDEXED, normalized_name, "
+                "tokenize='unicode61')"
+            )
+            indexed = db.execute("SELECT COUNT(*) FROM owner_search").fetchone()[0]
+            owners = db.execute(
+                "SELECT COUNT(*) FROM ("
+                "SELECT 1 FROM reporting_owners GROUP BY owner_cik, owner_name)"
+            ).fetchone()[0]
+            if indexed != owners:
+                self._rebuild_search_index(db)
+            self._search_index_enabled = True
+        except sqlite3.OperationalError:
+            # Some system SQLite builds omit FTS5. Search still works through the
+            # smaller DISTINCT fallback below, just without the prefix index.
+            self._search_index_enabled = False
+
+    def _rebuild_search_index(self, db: sqlite3.Connection) -> None:
+        db.execute("DELETE FROM owner_search")
+        rows = db.execute(
+            "SELECT owner_cik, owner_name FROM reporting_owners "
+            "WHERE owner_name IS NOT NULL GROUP BY owner_cik, owner_name"
+        ).fetchall()
+        db.executemany(
+            "INSERT INTO owner_search(owner_cik, owner_name, normalized_name) VALUES (?, ?, ?)",
+            ((row[0], row[1], self._normalized_search_name(row[1])) for row in rows),
+        )
 
     @contextmanager
     def _transaction(self):
@@ -237,6 +284,8 @@ class BulkOwnershipStore:
                     "INSERT INTO import_runs(quarter, source_url, submission_count) VALUES (?, ?, ?)",
                     (quarter.lower(), source_url or str(zip_path), counts["submissions"]),
                 )
+                if self._search_index_enabled:
+                    self._rebuild_search_index(db)
         return counts
 
     @staticmethod
@@ -310,20 +359,51 @@ class BulkOwnershipStore:
 
     def search_owner_candidates(self, tokens: list[str], limit: int = 1500) -> list[dict[str, Any]]:
         """Return a small active-insider candidate set for application-side ranking."""
-        cleaned = [token.upper() for token in tokens if len(token) >= 2][:4]
+        cleaned = [
+            normalized
+            for token in tokens
+            if len(normalized := self._normalized_search_name(token)) >= 2
+        ][:4]
         if not cleaned:
             return []
-        where = " OR ".join("UPPER(o.owner_name) LIKE ?" for _ in cleaned)
-        sql = f"""SELECT o.owner_cik AS cik, o.owner_name AS name,
-                         MAX(s.filing_date) AS last_filing_date
-                  FROM reporting_owners o JOIN submissions s ON s.accession = o.accession
-                  WHERE {where}
-                  GROUP BY o.owner_cik, o.owner_name
-                  ORDER BY last_filing_date DESC LIMIT ?"""
-        params = [f"%{token}%" for token in cleaned] + [max(1, min(limit, 5000))]
+        row_limit = max(1, min(limit, 5000))
         with self._lock:
-            rows = self.connect().execute(sql, params).fetchall()
-        return [dict(row) for row in rows]
+            db = self.connect()
+            if self._search_index_enabled:
+                # Exact token combinations are most useful, followed by each token
+                # independently for public/legal name differences (Jensen/Jen Hsun).
+                if len(cleaned) > 1:
+                    exact_rows = db.execute(
+                        "SELECT owner_cik AS cik, owner_name AS name FROM owner_search "
+                        "WHERE normalized_name MATCH ? LIMIT ?",
+                        (" AND ".join(f'"{token}"*' for token in cleaned), row_limit),
+                    ).fetchall()
+                    if exact_rows:
+                        return [dict(row) for row in exact_rows]
+
+                expressions = [f'"{token}"*' for token in sorted(cleaned, key=len, reverse=True)]
+                found: dict[tuple[str, str], dict[str, Any]] = {}
+                for expression in expressions:
+                    rows = db.execute(
+                        "SELECT owner_cik AS cik, owner_name AS name FROM owner_search "
+                        "WHERE normalized_name MATCH ? LIMIT ?",
+                        (expression, row_limit),
+                    ).fetchall()
+                    for row in rows:
+                        item = dict(row)
+                        found.setdefault((item["cik"], item["name"]), item)
+                return list(found.values())
+
+            # Portable fallback: avoid the submissions join, MAX and date sort. None
+            # of those values participate in name ranking and they made short queries
+            # especially expensive.
+            where = " OR ".join("UPPER(owner_name) LIKE ?" for _ in cleaned)
+            rows = db.execute(
+                f"SELECT DISTINCT owner_cik AS cik, owner_name AS name "
+                f"FROM reporting_owners WHERE {where} LIMIT ?",
+                [f"%{token}%" for token in cleaned] + [row_limit],
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def top_transactions(self, cik: str, limit: int = 20) -> list[dict[str, Any]]:
         """Fetch only the financially significant activity for the initial paint.
