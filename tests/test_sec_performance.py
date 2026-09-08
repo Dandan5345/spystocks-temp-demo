@@ -128,3 +128,8 @@ def test_fallback_search_bridges_public_and_edgar_legal_names(lookup_file):
     results = scan_cik_lookup(lookup_file, "Jensen Huang", 12)
     assert results[0]["cik"] == "0001197649"
     assert results[0]["score"] >= 92
+
+
+def test_fallback_search_ignores_one_letter_token_while_typing(lookup_file):
+    results = scan_cik_lookup(lookup_file, "Tim C", 12)
+    assert {result["cik"] for result in results} == {"0001214156", "0002088821"}

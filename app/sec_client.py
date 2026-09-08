@@ -147,12 +147,12 @@ def parse_cik_line(line: str) -> tuple[str, str] | None:
 def _name_match_score(query: str, name: str) -> float:
     """Score both ordinary and SEC legal-name orderings."""
     qnorm = normalize_name(query)
-    qparts = qnorm.split()
+    qparts = [part for part in qnorm.split() if len(part) >= 2]
     norm = normalize_name(name)
     nparts = norm.split()
     if not qparts or not nparts:
         return 0.0
-    score = max((fuzz.WRatio(variant, norm) for variant in name_variants(query)), default=0.0)
+    score = max((fuzz.WRatio(variant, norm) for variant in name_variants(" ".join(qparts))), default=0.0)
     overlap = sum(any(part.startswith(query_part) for part in nparts) for query_part in set(qparts))
     score += min(12, overlap * 6)
 
@@ -178,7 +178,7 @@ def _name_match_score(query: str, name: str) -> float:
 
 def scan_cik_lookup(path: Path, query: str, limit: int) -> list[dict[str, Any]]:
     scored: list[tuple[float, str, str]] = []
-    q_tokens = set(normalize_name(query).split())
+    q_tokens = {token for token in normalize_name(query).split() if len(token) >= 2}
     if not q_tokens:
         return []
 
