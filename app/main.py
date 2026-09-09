@@ -12,6 +12,8 @@ from fastapi.staticfiles import StaticFiles
 from .congress_client import CongressError, congress_client
 from .disclosure_client import DisclosureError, disclosure_client
 from .institution_client import InstitutionError, institution_client
+from .fec_client import FECError, fec_client
+from .legislator_directory import legislator_directory
 from .sec_client import build_profile, build_profile_overview, ensure_cik_lookup, search_cik
 from .whitehouse_client import WhiteHouseError, whitehouse_client
 from .wikipedia_client import wikipedia_knowledge
@@ -197,6 +199,29 @@ async def politician_intelligence(bioguide_id: str):
             "intelligence": None if isinstance(intelligence, Exception) else intelligence,
             "knowledge": None if isinstance(knowledge, Exception) else knowledge,
         }
+    except CongressError as error:
+        raise congress_http_error(error)
+
+
+@app.get("/api/politicians/{bioguide_id}/campaign-finance")
+async def politician_campaign_finance(bioguide_id: str):
+    try:
+        member = await congress_client.profile(bioguide_id)
+        directory = await legislator_directory(bioguide_id, member.get("currentMember", False))
+        candidate_ids = (directory.get("identifiers") or {}).get("fec") or []
+        if isinstance(candidate_ids, str):
+            candidate_ids = [candidate_ids]
+        return await fec_client.campaign_finance(candidate_ids)
+    except CongressError as error:
+        raise congress_http_error(error)
+    except FECError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+
+
+@app.get("/api/politicians/{bioguide_id}/votes")
+async def politician_votes(bioguide_id: str, limit: int = Query(12, ge=1, le=20)):
+    try:
+        return await congress_client.roll_call_votes(bioguide_id, limit=limit)
     except CongressError as error:
         raise congress_http_error(error)
 

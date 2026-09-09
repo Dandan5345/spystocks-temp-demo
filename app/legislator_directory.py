@@ -70,7 +70,7 @@ def _person_details(records: list[dict[str, Any]], bioguide: str) -> dict[str, A
         "leadershipRoles": leadership,
         "identifiers": {
             key: value for key, value in (record.get("id") or {}).items()
-            if key in {"bioguide", "wikidata", "wikipedia", "govtrack", "opensecrets", "fec"}
+            if key in {"bioguide", "wikidata", "wikipedia", "govtrack", "opensecrets", "fec", "lis"}
         },
     }
 

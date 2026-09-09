@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from . import snapshots
+from . import cache, snapshots
 
 import asyncio
 import json
@@ -8,6 +8,7 @@ import os
 import re
 import time
 import unicodedata
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -295,6 +296,7 @@ class CongressClient:
         self._memory: dict[str, tuple[float, Any]] = {}
         self._index_lock = asyncio.Lock()
         self._client: httpx.AsyncClient | None = None
+        self._public_client: httpx.AsyncClient | None = None
 
     def _require_key(self) -> None:
         if not self.api_key:
@@ -340,6 +342,34 @@ class CongressClient:
             raise CongressError("We couldn't reach Congress.gov right now. Please try again.")
         except (httpx.HTTPStatusError, ValueError):
             raise CongressError("Congress.gov returned an unexpected response. Please try again.")
+
+    async def _house_clerk_vote(self, source_url: str, bioguide: str) -> dict[str, Any] | None:
+        parsed = urlparse(source_url)
+        if parsed.scheme != "https" or parsed.netloc != "clerk.house.gov":
+            return None
+        if self._public_client is None:
+            # Intentionally separate from the Congress.gov client: never send the API
+            # key to the Clerk host.
+            self._public_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(10.0), follow_redirects=True,
+                headers={"Accept": "application/xml, text/xml;q=0.9, */*;q=0.8", "User-Agent": "Mozilla/5.0"},
+            )
+        try:
+            response = await self._public_client.get(source_url)
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+        except (httpx.HTTPError, ET.ParseError):
+            return None
+        for recorded in root.findall(".//recorded-vote"):
+            legislator = recorded.find("legislator")
+            if legislator is not None and legislator.attrib.get("name-id") == bioguide:
+                return {
+                    "vote": recorded.findtext("vote"),
+                    "question": root.findtext(".//vote-question"),
+                    "result": root.findtext(".//vote-result"),
+                    "description": root.findtext(".//vote-desc"),
+                }
+        return None
 
     def _cached(self, key: str) -> Any | None:
         cached = self._memory.get(key)
@@ -479,6 +509,72 @@ class CongressClient:
             "directory": directory,
         }
         return self._remember(key, result, 24 * 3600)
+
+    async def roll_call_votes(self, bioguide_id: str, *, limit: int = 12) -> dict[str, Any]:
+        """Return recent recorded House votes without putting them on the critical profile path."""
+        bioguide = bioguide_id.upper()
+        if not BIOGUIDE_RE.fullmatch(bioguide):
+            raise CongressError("Invalid Bioguide ID.", status_code=400)
+        profile = await self.profile(bioguide)
+        if profile.get("currentChamber") != "House":
+            return {
+                "available": False,
+                "chamber": profile.get("currentChamber"),
+                "message": "A reliable member-level Senate roll-call feed is not available through Congress.gov yet.",
+                "source": {"name": "U.S. Senate Roll Call Votes", "officialUrl": "https://www.senate.gov/legislative/votes_new.htm"},
+            }
+        current_term = max(profile.get("terms") or [], key=lambda row: int(row.get("startYear") or 0), default={})
+        congress = int(current_term.get("congress") or 0)
+        if not congress:
+            return {"available": False, "message": "No current Congress number was found for this member."}
+        session = 1 if time.gmtime().tm_year % 2 else 2
+        cache_key = f"house-votes:v3:{congress}:{session}:{bioguide}:{limit}"
+
+        async def fetch() -> dict[str, Any]:
+            first = await self._get(f"/house-vote/{congress}/{session}", params={"offset": 0, "limit": 250})
+            metadata = list(first.get("houseRollCallVotes") or [])
+            total = int((first.get("pagination") or {}).get("count") or len(metadata))
+            if len(metadata) < total:
+                pages = await asyncio.gather(*[
+                    self._get(f"/house-vote/{congress}/{session}", params={"offset": offset, "limit": 250})
+                    for offset in range(250, total, 250)
+                ], return_exceptions=True)
+                for page in pages:
+                    if not isinstance(page, Exception):
+                        metadata.extend(page.get("houseRollCallVotes") or [])
+            metadata.sort(key=lambda row: str(row.get("startDate") or ""), reverse=True)
+            recent = metadata[:limit]
+            details = await asyncio.gather(*[
+                self._house_clerk_vote(str(row.get("sourceDataURL") or ""), bioguide) for row in recent
+            ], return_exceptions=True)
+            votes = []
+            for summary, payload in zip(recent, details):
+                if isinstance(payload, Exception) or not payload:
+                    continue
+                roll = int(summary.get("rollCallNumber") or 0)
+                start = str(summary.get("startDate") or "")
+                votes.append({
+                    "rollCallNumber": roll,
+                    "date": start,
+                    "vote": payload.get("vote"),
+                    "question": payload.get("question"),
+                    "description": payload.get("description"),
+                    "result": payload.get("result") or summary.get("result"),
+                    "voteType": summary.get("voteType"),
+                    "legislation": " ".join(str(value) for value in (summary.get("legislationType"), summary.get("legislationNumber")) if value),
+                    "legislationUrl": summary.get("legislationUrl"),
+                    "officialUrl": f"https://clerk.house.gov/Votes/{start[:4]}{roll:03d}" if roll and start else summary.get("sourceDataURL"),
+                })
+            return {
+                "available": True,
+                "chamber": "House",
+                "congress": congress,
+                "session": session,
+                "votes": votes,
+                "source": {"name": "Congress.gov / Office of the House Clerk", "officialUrl": "https://clerk.house.gov/Votes"},
+            }
+
+        return await cache.cached(cache_key, fetch, ttl=2 * 60 * 60)
 
     async def _all_sponsored_legislation(self, bioguide: str) -> dict[str, Any]:
         first = await self.legislation(bioguide, "sponsored", 0, 250)

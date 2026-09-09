@@ -565,6 +565,8 @@ async function loadPolitician(personId, {push = true} = {}) {
     }
     if (profile.profileType === 'legislator') {
       loadPoliticianIntelligence(profile.bioguideId, loadId);
+      loadCampaignFinance(profile.bioguideId, loadId);
+      loadRollCallVotes(profile.bioguideId, loadId);
       loadDisclosures(profile.bioguideId);
       loadLegislation('sponsored', true);
       loadLegislation('cosponsored', true);
@@ -599,6 +601,8 @@ function renderPolitician(profile) {
   $('enactedLawsCard').classList.remove('hidden');
   $('politicianScoreCard').classList.remove('hidden');
   $('committeesCard').classList.remove('hidden');
+  $('campaignFinanceCard').classList.remove('hidden');
+  $('rollCallVotesCard').classList.remove('hidden');
   $('congressTimelineCard').classList.remove('hidden');
   $('disclosuresCard').classList.remove('hidden');
   $('sponsoredCard').classList.remove('hidden');
@@ -636,6 +640,15 @@ function renderPolitician(profile) {
   $('committees').innerHTML = '<div class="section-loading shimmer"></div>';
   $('enactedLawsCount').textContent = 'Loading…';
   $('enactedLaws').innerHTML = '<div class="section-loading shimmer"></div>';
+  $('campaignFinanceSource').classList.add('hidden');
+  $('campaignFinanceStatus').textContent = 'Loading official FEC filings…';
+  $('campaignTotals').innerHTML = '<div class="section-loading shimmer"></div>';
+  $('campaignCommittees').innerHTML = '';
+  $('individualDonors').innerHTML = '';
+  $('pacContributions').innerHTML = '';
+  $('bundlerDisclosures').innerHTML = '';
+  $('rollCallVotesSource').classList.add('hidden');
+  $('rollCallVotes').innerHTML = '<div class="section-loading shimmer"></div>';
 }
 
 function renderExecutiveProfile(profile) {
@@ -661,6 +674,8 @@ function renderExecutiveProfile(profile) {
   $('enactedLawsCard').classList.add('hidden');
   $('politicianScoreCard').classList.add('hidden');
   $('committeesCard').classList.add('hidden');
+  $('campaignFinanceCard').classList.add('hidden');
+  $('rollCallVotesCard').classList.add('hidden');
   $('whiteHouseBiography').innerHTML = (profile.biography || []).map(paragraph => `<p>${esc(paragraph)}</p>`).join('') || '<p class="empty-state">No official biography was published.</p>';
   $('congressTimelineCard').classList.add('hidden');
   $('disclosuresCard').classList.add('hidden');
@@ -725,6 +740,67 @@ function renderPoliticianIntelligence(payload) {
     ['Office', directory.office], ['Phone', directory.phone], ['Address', directory.address]
   ].filter(([, value]) => value);
   if (extraRows.length) $('personalDetails').innerHTML += extraRows.map(([label, value]) => `<div class="prov-row"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join('');
+  if (directory.contactForm) $('personalDetails').innerHTML += `<div class="prov-row"><span>Contact form</span><strong><a class="text-link" href="${esc(directory.contactForm)}" target="_blank" rel="noreferrer">Send a message ↗</a></strong></div>`;
+}
+
+async function loadCampaignFinance(memberId, loadId) {
+  try {
+    const data = await cachedApi(`/api/politicians/${encodeURIComponent(memberId)}/campaign-finance`, 6 * 60 * 60 * 1000, {session: true});
+    if (loadId !== pageLoadId || activePolitician !== memberId) return;
+    renderCampaignFinance(data);
+  } catch (error) {
+    if (loadId !== pageLoadId || activePolitician !== memberId) return;
+    $('campaignFinanceStatus').textContent = error.message;
+    $('campaignTotals').innerHTML = '<p class="empty-state">Campaign finance data could not be loaded.</p>';
+  }
+}
+
+function financeRows(items, kind) {
+  return (items || []).map(item => `<a class="finance-row" href="${esc(item.sourceUrl || '#')}" ${item.sourceUrl ? 'target="_blank" rel="noreferrer"' : ''}><div><strong>${esc(item.name || item.committeeName || 'Filed disclosure')}</strong><span>${esc([item.employer, item.occupation].filter(Boolean).join(' · ') || item.report || '')}</span></div><div class="finance-amount"><strong>${item.amount == null ? '' : money(item.amount)}</strong><span>${date(item.date || item.filedAt)}</span></div></a>`).join('') || `<p class="empty-state">No ${esc(kind)} records were found for this cycle.</p>`;
+}
+
+function renderCampaignFinance(data) {
+  if (!data.available) {
+    $('campaignFinanceStatus').textContent = data.message || 'No current FEC campaign record was found.';
+    $('campaignTotals').innerHTML = '';
+    $('campaignCommittees').innerHTML = '';
+    $('individualDonors').innerHTML = '<p class="empty-state">No itemized donor record for this cycle.</p>';
+    $('pacContributions').innerHTML = '<p class="empty-state">No PAC contribution record for this cycle.</p>';
+    $('bundlerDisclosures').innerHTML = '<p class="empty-state">No bundling disclosure record for this cycle.</p>';
+    return;
+  }
+  const totals = data.totals || {};
+  $('campaignFinanceStatus').textContent = `Election cycle ${data.cycle} · coverage through ${date(data.coverageThrough)}`;
+  $('campaignFinanceSource').href = data.source?.officialUrl || '#';
+  $('campaignFinanceSource').classList.toggle('hidden', !data.source?.officialUrl);
+  $('campaignTotals').innerHTML = [
+    ['Total receipts', totals.raised], ['Total spending', totals.spent], ['Cash on hand', totals.cashOnHand],
+    ['Contributions', totals.contributions], ['Itemized individuals', totals.individualItemized], ['Other committees', totals.otherCommittees]
+  ].map(([label, value]) => `<div class="campaign-total"><span>${esc(label)}</span><strong>${money(value)}</strong></div>`).join('');
+  $('campaignCommittees').innerHTML = `<div class="subsection-title"><h4>Campaign committees</h4><span>${(data.committees || []).length}</span></div>` + (data.committees || []).map(item => `<a class="committee-item" href="${esc(item.officialUrl)}" target="_blank" rel="noreferrer"><div><strong>${esc(item.name)}</strong><span>${esc([item.designation, item.type].filter(Boolean).join(' · '))}</span></div><em>${esc(item.id)}</em></a>`).join('');
+  $('individualDonorCount').textContent = `${(data.individualDonors || []).length} shown`;
+  $('individualDonors').innerHTML = financeRows(data.individualDonors, 'individual donor');
+  $('pacContributionCount').textContent = `${(data.pacAndOrganizationContributions || []).length} shown`;
+  $('pacContributions').innerHTML = financeRows(data.pacAndOrganizationContributions, 'PAC or organization contribution');
+  $('bundlerDisclosures').innerHTML = financeRows(data.bundlerDisclosures, 'Form 3L lobbyist bundling disclosure');
+}
+
+async function loadRollCallVotes(memberId, loadId) {
+  try {
+    const data = await cachedApi(`/api/politicians/${encodeURIComponent(memberId)}/votes?limit=12`, 2 * 60 * 60 * 1000, {session: true});
+    if (loadId !== pageLoadId || activePolitician !== memberId) return;
+    const source = $('rollCallVotesSource');
+    source.href = data.source?.officialUrl || '#';
+    source.classList.toggle('hidden', !data.source?.officialUrl);
+    if (!data.available) {
+      $('rollCallVotes').innerHTML = `<p class="empty-state">${esc(data.message || 'Roll-call votes are unavailable.')}</p>`;
+      return;
+    }
+    $('rollCallVotes').innerHTML = (data.votes || []).map(item => `<a class="vote-row" href="${esc(item.officialUrl || '#')}" target="_blank" rel="noreferrer"><span class="vote-cast ${esc(String(item.vote || '').toLowerCase())}">${esc(item.vote || '—')}</span><div><strong>${esc(item.legislation || item.question || `Roll call ${item.rollCallNumber}`)}</strong><span>${esc([item.question, item.result, `Roll ${item.rollCallNumber}`].filter(Boolean).join(' · '))}</span></div><time>${date(item.date)}</time></a>`).join('') || '<p class="empty-state">No recent member votes were found.</p>';
+  } catch (error) {
+    if (loadId !== pageLoadId || activePolitician !== memberId) return;
+    $('rollCallVotes').innerHTML = `<p class="empty-state">${esc(error.message)}</p>`;
+  }
 }
 
 function identityFact(label, value, note = '') {
