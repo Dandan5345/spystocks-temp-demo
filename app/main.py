@@ -181,6 +181,23 @@ async def politician_legislation(
         raise congress_http_error(error)
 
 
+@app.get("/api/politicians/{bioguide_id}/intelligence")
+async def politician_intelligence(bioguide_id: str):
+    try:
+        profile = await congress_client.profile(bioguide_id)
+        intelligence, knowledge = await asyncio.gather(
+            congress_client.intelligence(bioguide_id),
+            wikipedia_knowledge("congress:" + bioguide_id, profile["name"], []),
+            return_exceptions=True,
+        )
+        return {
+            "intelligence": None if isinstance(intelligence, Exception) else intelligence,
+            "knowledge": None if isinstance(knowledge, Exception) else knowledge,
+        }
+    except CongressError as error:
+        raise congress_http_error(error)
+
+
 @app.get("/api/politicians/{bioguide_id}/disclosures")
 async def politician_disclosures(bioguide_id: str):
     try:

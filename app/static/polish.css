@@ -86,3 +86,48 @@ body{min-height:100dvh;-webkit-tap-highlight-color:transparent;font-family:"Aven
   .compact-tabs button{font-size:.75rem;padding:9px 4px}
   .back-button{align-self:flex-start}
 }
+
+/* Encyclopedic profile layer */
+.insider-stats{grid-template-columns:repeat(5,minmax(0,1fr))}
+.identity-overview{margin:18px 0 22px;padding:22px 24px}
+.identity-overview-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:18px}
+.identity-overview-heading h3{margin:4px 0 0;font-size:1.25rem}
+.identity-overview-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;overflow:hidden;border:1px solid var(--line);border-radius:14px;background:var(--line)}
+.identity-fact{display:flex;min-height:92px;flex-direction:column;justify-content:center;gap:6px;padding:15px 16px;background:var(--card)}
+.identity-fact span{color:var(--quiet);font-size:.68rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.identity-fact strong{font-size:.9rem;line-height:1.42}
+.identity-fact small{color:var(--quiet);font-size:.68rem}
+.score-stat .stat-value,.score-orb strong{color:var(--accent)}
+.snapshot-note{margin:-2px 0 16px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--accent) 24%,var(--line));border-radius:12px;background:color-mix(in srgb,var(--accent) 6%,transparent);color:var(--muted);font-size:.86rem;line-height:1.55}
+.ownership-list{display:flex;flex-direction:column}
+.ownership-row{display:grid;grid-template-columns:minmax(180px,1.5fr) repeat(3,minmax(100px,.7fr)) auto;gap:16px;align-items:center;padding:15px 0;border-bottom:1px solid var(--line)}
+.ownership-row:last-child{border-bottom:0}
+.ownership-row>div{min-width:0;display:flex;flex-direction:column;gap:4px}
+.ownership-row strong{font-size:.91rem;overflow-wrap:anywhere}
+.ownership-row span{color:var(--quiet);font-size:.73rem;line-height:1.35}
+.fact-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;margin-top:22px;overflow:hidden;border:1px solid var(--line);border-radius:14px;background:var(--line)}
+.fact{display:flex;flex-direction:column;gap:7px;padding:14px 15px;background:var(--card)}
+.fact span{font-size:.69rem;letter-spacing:.08em;text-transform:uppercase;color:var(--quiet)}
+.fact strong{font-size:.88rem;line-height:1.45;font-weight:600}
+.score-card{overflow:hidden}
+.score-orb{display:flex;align-items:baseline;justify-content:center;min-width:78px;height:78px;padding-top:18px;border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line));border-radius:50%;background:color-mix(in srgb,var(--accent) 7%,transparent)}
+.score-orb strong{font:700 1.75rem/1 var(--display,inherit)}
+.score-orb span{font-size:.72rem;color:var(--quiet)}
+.score-parts{display:flex;flex-direction:column;gap:14px;margin-top:16px}
+.score-part>div{display:flex;justify-content:space-between;gap:12px;margin-bottom:7px;font-size:.78rem}
+.score-part span{color:var(--muted)}
+.score-part i{display:block;height:5px;overflow:hidden;border-radius:99px;background:var(--line)}
+.score-part b{display:block;height:100%;border-radius:inherit;background:var(--accent)}
+.score-note{margin:18px 0 0;color:var(--quiet);font-size:.76rem;line-height:1.55}
+.committee-list{display:flex;flex-direction:column}
+.committee-item{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;padding:13px 0;border-bottom:1px solid var(--line);color:inherit;text-decoration:none}
+.committee-item:last-child{border-bottom:0}
+.committee-item>div{display:flex;min-width:0;flex-direction:column;gap:4px}
+.committee-item strong{font-size:.86rem;line-height:1.4}
+.committee-item span{font-size:.72rem;color:var(--quiet)}
+.committee-item em,.law-badge{flex:none;border:1px solid var(--line);border-radius:99px;padding:4px 7px;color:var(--muted);font-size:.63rem;font-style:normal;text-transform:uppercase;letter-spacing:.05em}
+.legislation-row.enacted{grid-template-columns:auto minmax(0,1fr) auto}
+.law-badge{border-color:color-mix(in srgb,var(--accent) 45%,var(--line));color:var(--accent);font-weight:700}
+
+@media(max-width:980px){.insider-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.insider-stats .stat:first-child{grid-column:auto}.identity-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ownership-row{grid-template-columns:minmax(160px,1.4fr) repeat(2,minmax(90px,.7fr)) auto}.ownership-row>div:nth-child(4){display:none}}
+@media(max-width:620px){.identity-overview{padding:18px}.identity-overview-heading{flex-direction:column;gap:8px}.identity-overview-grid{grid-template-columns:1fr}.identity-fact{min-height:auto}.fact-grid{grid-template-columns:1fr}.ownership-row{grid-template-columns:minmax(0,1fr) auto;gap:10px}.ownership-row>div:nth-child(3),.ownership-row>div:nth-child(4){display:none}.score-orb{width:68px;height:68px;min-width:68px;padding-top:15px}.committee-item{flex-direction:column}.legislation-row.enacted{grid-template-columns:auto minmax(0,1fr)}.law-badge{display:none}}

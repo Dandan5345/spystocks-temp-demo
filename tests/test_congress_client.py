@@ -131,6 +131,17 @@ def test_legislation_parsing_uses_true_pagination_total():
     assert result["items"][0]["officialUrl"].endswith("/house-resolution/742")
 
 
+def test_legislation_marks_enacted_law_from_official_latest_action():
+    result = normalize_legislation({
+        "pagination": {"count": 1},
+        "sponsoredLegislation": [{
+            "congress": 117, "type": "HR", "number": "3325", "title": "A law",
+            "latestAction": {"actionDate": "2021-08-05", "text": "Became Public Law No: 117-32."},
+        }],
+    }, "sponsored")
+    assert result["items"][0]["enacted"] is True
+
+
 @pytest.mark.asyncio
 async def test_missing_api_key():
     client = CongressClient("")

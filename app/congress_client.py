@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 import httpx
 from rapidfuzz import fuzz
 
+from .legislator_directory import legislator_directory
+
 CONGRESS_ROOT = "https://api.congress.gov/v3"
 CACHE_DIR = Path(__file__).resolve().parents[1] / "data"
 MEMBER_INDEX_CACHE = CACHE_DIR / "congress-member-index.json"
@@ -275,6 +277,7 @@ def normalize_legislation(payload: dict[str, Any], kind: Literal["sponsored", "c
             "latestAction": {"date": action.get("actionDate"), "text": action.get("text")},
             "policyArea": (item.get("policyArea") or {}).get("name"),
             "officialUrl": congress_bill_url(item),
+            "enacted": bool(re.search(r"became (?:public|private) law|signed by president", str(action.get("text") or ""), re.I)),
         })
     pagination = payload.get("pagination") or {}
     return {
@@ -429,6 +432,60 @@ class CongressClient:
             return cached
         data = await self._get(f"/member/{bioguide}/{kind}-legislation", params={"offset": offset, "limit": limit})
         return self._remember(key, normalize_legislation(data, kind), 4 * 3600)
+
+    async def intelligence(self, bioguide_id: str) -> dict[str, Any]:
+        bioguide = bioguide_id.upper()
+        if not BIOGUIDE_RE.fullmatch(bioguide):
+            raise CongressError("Invalid Bioguide ID.", status_code=400)
+        key = f"intelligence:v2:{bioguide}"
+        if (cached := self._cached(key)) is not None:
+            return cached
+        profile = await self.profile(bioguide)
+        directory_task = legislator_directory(bioguide, profile.get("currentMember", False))
+        legislation_task = self._all_sponsored_legislation(bioguide)
+        directory, sponsored = await asyncio.gather(directory_task, legislation_task, return_exceptions=True)
+        directory = {} if isinstance(directory, Exception) else directory
+        sponsored = {"total": profile.get("sponsoredLegislation", {}).get("total"), "items": []} if isinstance(sponsored, Exception) else sponsored
+        laws = [item for item in sponsored.get("items") or [] if item.get("enacted")]
+        years = int(profile.get("yearsInCongress") or 0)
+        sponsored_total = int(sponsored.get("total") or 0)
+        committees = directory.get("committees") or []
+        score_parts = {
+            "service": min(20, round(years / 30 * 20)),
+            "legislation": min(25, round(sponsored_total / 100 * 25)),
+            "enactedLaws": min(35, len(laws) * 7),
+            "committees": min(15, len([row for row in committees if not row.get("subcommittee")]) * 5),
+            "recordCompleteness": 5 if directory.get("birthday") else 2,
+        }
+        score = min(100, sum(score_parts.values()))
+        result = {
+            "score": score,
+            "grade": "A" if score >= 85 else "B" if score >= 70 else "C" if score >= 55 else "D" if score >= 40 else "E",
+            "scoreLabel": "Legislative footprint",
+            "scoreParts": score_parts,
+            "scoreNote": "Measures the size and verifiability of the public record—not ideology, ethics, or job performance.",
+            "enactedLaws": laws,
+            "enactedLawCountInLoadedRecord": len(laws),
+            "sponsoredLoaded": len(sponsored.get("items") or []),
+            "directory": directory,
+        }
+        return self._remember(key, result, 24 * 3600)
+
+    async def _all_sponsored_legislation(self, bioguide: str) -> dict[str, Any]:
+        first = await self.legislation(bioguide, "sponsored", 0, 250)
+        items = list(first.get("items") or [])
+        total = int(first.get("total") or len(items))
+        offset = len(items)
+        # Congress.gov caps a page at 250. Long-serving members occasionally need a
+        # few pages; the cap prevents pathological records from delaying enrichment.
+        while offset < total and offset < 1250:
+            page = await self.legislation(bioguide, "sponsored", offset, 250)
+            page_items = page.get("items") or []
+            if not page_items:
+                break
+            items.extend(page_items)
+            offset += len(page_items)
+        return {**first, "items": items, "hasMore": offset < total}
 
 
 congress_client = CongressClient()

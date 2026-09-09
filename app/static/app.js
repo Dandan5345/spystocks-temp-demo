@@ -45,9 +45,12 @@ let searchPatienceTimer;
 const searchCache = new Map();
 const narrowScreen = matchMedia('(max-width: 560px)');
 let activePolitician = null;
+let activePoliticianProfile = null;
 let insiderLoadId = 0;
 let pageLoadId = 0;
 let activeInsiderKnowledge = null;
+let activeInsiderSummary = null;
+let activeInsiderPerson = null;
 const responseCache = new Map();
 const inFlightRequests = new Map();
 const legislationState = {sponsored: {offset: 0, items: []}, cosponsored: {offset: 0, items: []}};
@@ -345,6 +348,7 @@ function showInsiderProfile(cik, push) {
 
 function renderInsiderOverview(data) {
   const person = data.person || {}, coverage = data.coverage || {};
+  activeInsiderPerson = person;
   $('personName').textContent = person.name || 'Unknown SEC filer';
   $('cikValue').textContent = 'CIK ' + person.cik;
   $('secProfileLink').href = 'https://www.sec.gov/edgar/browse/?CIK=' + encodeURIComponent(person.cik) + '&owner=include';
@@ -353,12 +357,14 @@ function renderInsiderOverview(data) {
   const role = data.summary?.roles?.[0];
   $('headlineRole').textContent = role ? `${role.role} · ${role.company}${role.ticker ? ' (' + role.ticker + ')' : ''}` : 'SEC reporting owner';
   renderAvatar('insiderAvatar', 'insiderInitials', person.name);
+  renderInsiderIdentityOverview(person, role);
   if (data.summary) {
     const summary = data.summary;
+    activeInsiderSummary = summary;
     $('statFilings').textContent = summary.stats.filings_parsed.toLocaleString();
-    $('statTransactions').textContent = summary.stats.transactions.toLocaleString();
+    $('statTransactions').textContent = '…';
     $('statCompanies').textContent = summary.stats.companies.toLocaleString();
-    $('statSold').textContent = money(summary.stats.disposed_value);
+    $('statSold').textContent = '…';
     renderRoles(summary.roles || []);
     renderCompanies(summary.companies || []);
     allTransactions = summary.transactions || [];
@@ -376,6 +382,7 @@ function renderInsiderOverview(data) {
   $('proxyCard').classList.add('hidden');
   $('knowledgeCard').classList.add('hidden');
   activeInsiderKnowledge = null;
+  if (!data.summary) activeInsiderSummary = null;
   $('insiderLoadStatus').classList.remove('hidden', 'error');
   $('insiderLoadText').textContent = data.status === 'ready'
     ? 'Profile ready · loading verified biography…'
@@ -390,10 +397,13 @@ async function loadInsiderKnowledge(cik, loadId) {
     activeInsiderKnowledge = knowledge;
     $('knowledgeTitle').textContent = knowledge.title || 'About';
     $('knowledgeSummary').textContent = knowledge.summary || '';
+    renderFactGrid('knowledgeFacts', knowledge.facts || {});
+    enrichInsiderIdentityOverview(knowledge.facts || {});
     $('knowledgeSource').href = knowledge.url;
     const signals = knowledge.evidence_signals || [];
     $('knowledgeEvidence').innerHTML = `<strong>Identity evidence:</strong> ${esc(signals.join(' · '))}`;
     $('knowledgeCard').classList.remove('hidden');
+    updateInsiderDepth();
     if (knowledge.image_url) renderAvatar('insiderAvatar', 'insiderInitials', $('personName').textContent, knowledge.image_url);
   } catch (_) {
     // Public biography is optional; verified SEC data remains the source of record.
@@ -402,6 +412,7 @@ async function loadInsiderKnowledge(cik, loadId) {
 
 function renderInsider(data) {
   const person = data.person, summary = data.summary, coverage = data.coverage;
+  activeInsiderPerson = person;
   $('personName').textContent = person.name || 'Unknown SEC filer';
   $('insiderInitials').textContent = initials(person.name);
   $('cikValue').textContent = 'CIK ' + person.cik;
@@ -410,17 +421,20 @@ function renderInsider(data) {
   $('locationValue').textContent = [location.city, location.state, location.country].filter(Boolean).join(', ') || 'Location not reported';
   const role = summary.roles?.[0];
   $('headlineRole').textContent = role ? `${role.role} · ${role.company}${role.ticker ? ' (' + role.ticker + ')' : ''}` : 'SEC reporting owner';
+  renderInsiderIdentityOverview(person, role);
   renderAvatar('insiderAvatar', 'insiderInitials', person.name, person.photo?.url || activeInsiderKnowledge?.image_url);
   $('statFilings').textContent = summary.stats.filings_parsed.toLocaleString();
-  $('statTransactions').textContent = summary.stats.transactions.toLocaleString();
+  activeInsiderSummary = summary;
+  $('statTransactions').textContent = '…';
   $('statCompanies').textContent = summary.stats.companies.toLocaleString();
-  $('statSold').textContent = money(summary.stats.disposed_value);
+  $('statSold').textContent = '…';
   $('coverageText').textContent = `${coverage.ownership_filings_found} ownership filings found${coverage.oldest_loaded ? ' · back to ' + coverage.oldest_loaded.slice(0, 4) : ''}`;
   renderRoles(summary.roles || []);
   renderCompanies(summary.companies || []);
   renderProxy(data.proxy_enrichment);
   allTransactions = summary.transactions || [];
   renderTransactions(allTransactions);
+  if (activeInsiderKnowledge?.facts) enrichInsiderIdentityOverview(activeInsiderKnowledge.facts);
 }
 
 function renderAvatar(containerId, initialsId, name, imageUrl) {
@@ -455,15 +469,70 @@ function renderCompanies(companies) {
 }
 
 function renderTransactions(transactions) {
-  const available = transactions.filter(tx => tx.code !== 'HOLDING');
-  const notable = [...available].filter(tx => tx.value != null).sort((a, b) => Math.abs(Number(b.value)) - Math.abs(Number(a.value))).slice(0, 5);
-  const notableKeys = new Set(notable.map(tx => `${tx.accession}:${tx.security}:${tx.date}:${tx.code}`));
-  const rows = notable.concat(available.filter(tx => !notableKeys.has(`${tx.accession}:${tx.security}:${tx.date}:${tx.code}`)).slice(0, 45));
-  $('transactions').innerHTML = rows.map(tx => {
-    const type = tx.acquired_disposed === 'A' ? 'buy' : tx.acquired_disposed === 'D' ? 'sell' : 'other';
-    const arrow = type === 'buy' ? '↙' : type === 'sell' ? '↗' : '•';
-    return `<div class="tx"><div class="tx-icon ${type}">${arrow}</div><div class="tx-main"><strong>${esc(tx.company || 'Unknown')} ${tx.ticker ? '· ' + esc(tx.ticker) : ''}</strong><span>${esc(tx.security || 'Security')} · ${date(tx.date || tx.filing_date)} · code ${esc(tx.code || '—')}${tx.derivative ? ' · derivative' : ''}</span></div><div class="tx-cell shares"><strong>${money(tx.value)}</strong><span>reported transaction value</span></div><div class="tx-cell value"><strong>${tx.price != null ? money(tx.price) : '—'}</strong><span>${tx.price != null ? 'price per share' : 'price not disclosed'}</span></div><a class="text-link" href="${esc(tx.sec_url || '#')}" target="_blank" rel="noreferrer">↗</a></div>`;
-  }).join('') || '<p class="empty-state">No structured transactions found in the loaded filings.</p>';
+  const latest = new Map();
+  [...transactions].sort((a, b) => String(b.date || b.filing_date || '').localeCompare(String(a.date || a.filing_date || ''))).forEach(tx => {
+    const key = [tx.company || '', tx.ticker || '', tx.security || '', tx.derivative ? 'D' : 'N'].join('|');
+    if (!latest.has(key) && tx.shares_after != null && Number(tx.shares_after) > 0) latest.set(key, tx);
+  });
+  const positions = [...latest.values()].sort((a, b) => Number(b.shares_after || 0) - Number(a.shares_after || 0));
+  const disclosedValue = positions.reduce((sum, tx) => sum + (tx.price != null ? Number(tx.shares_after) * Number(tx.price) : 0), 0);
+  $('statTransactions').textContent = positions.length.toLocaleString();
+  $('statSold').textContent = disclosedValue ? money(disclosedValue) : 'Not calculable';
+  $('transactions').innerHTML = positions.slice(0, 16).map(tx => {
+    const estimate = tx.price != null ? Number(tx.shares_after) * Number(tx.price) : null;
+    return `<article class="ownership-row"><div class="ownership-company"><strong>${esc(tx.company || 'Unknown issuer')}</strong><span>${esc(tx.ticker || tx.security || 'Reported security')}${tx.derivative ? ' · derivative' : ''}</span></div><div><strong>${num(tx.shares_after)}</strong><span>reported shares</span></div><div><strong>${estimate != null ? money(estimate) : '—'}</strong><span>${estimate != null ? 'disclosed-price estimate' : 'no usable price'}</span></div><div><strong>${date(tx.date || tx.filing_date)}</strong><span>balance date</span></div><a class="text-link" href="${esc(tx.sec_url || '#')}" target="_blank" rel="noreferrer">SEC ↗</a></article>`;
+  }).join('') || '<p class="empty-state">No positive shares-after balance was found in the loaded SEC records.</p>';
+  updateInsiderDepth();
+}
+
+function renderFactGrid(targetId, facts) {
+  const preferred = ['Born', 'Place of birth', 'Citizenship', 'Education', 'Occupation', 'Employer', 'Positions held', 'Spouse', 'Children', 'Awards'];
+  $(targetId).innerHTML = preferred.filter(label => (facts[label] || []).length).map(label => `<div class="fact"><span>${esc(label)}</span><strong>${esc((facts[label] || []).join(' · '))}</strong></div>`).join('');
+}
+
+function renderInsiderIdentityOverview(person, role) {
+  const location = person.latest_location || {};
+  $('insiderIdentityOverview').innerHTML = [
+    identityFact('Current role', role?.role || 'SEC reporting owner'),
+    identityFact('Company', role?.company, role?.ticker || ''),
+    identityFact('Location', [location.city, location.state, location.country].filter(Boolean).join(', ') || 'Not reported'),
+    identityFact('SEC identifier', person.cik),
+    identityFact('Profile type', 'Corporate insider'),
+    identityFact('Biography', 'Loading verified public details…')
+  ].join('');
+  $('insiderIdentityStatus').textContent = 'SEC public record';
+}
+
+function enrichInsiderIdentityOverview(facts) {
+  const pick = label => (facts[label] || []).join(' · ');
+  const person = activeInsiderPerson || {}, location = person.latest_location || {};
+  const role = activeInsiderSummary?.roles?.[0];
+  $('insiderIdentityOverview').innerHTML = [
+    identityFact('Born', pick('Born')),
+    identityFact('Place of birth', pick('Place of birth')),
+    identityFact('Current role', role?.role || pick('Occupation') || 'SEC reporting owner'),
+    identityFact('Company', role?.company, role?.ticker || ''),
+    identityFact('Education', pick('Education')),
+    identityFact('Occupation', pick('Occupation')),
+    identityFact('Citizenship', pick('Citizenship')),
+    identityFact('Location in SEC record', [location.city, location.state, location.country].filter(Boolean).join(', ') || 'Not reported'),
+    identityFact('Family', [pick('Spouse'), pick('Children')].filter(Boolean).join(' · ')),
+    identityFact('SEC identifier', person.cik)
+  ].filter(Boolean).join('');
+  $('insiderIdentityStatus').textContent = 'SEC · Wikipedia · Wikidata';
+}
+
+function updateInsiderDepth() {
+  const summary = activeInsiderSummary;
+  if (!summary) { $('statScore').textContent = '—'; return; }
+  const roles = summary.roles || [], companies = summary.companies || [];
+  const knowledge = activeInsiderKnowledge;
+  const facts = knowledge?.facts || {};
+  let score = Math.min(35, (summary.stats?.filings_parsed || 0) * 2);
+  score += Math.min(20, roles.length * 5) + Math.min(15, companies.length * 3);
+  if (knowledge?.summary) score += 15;
+  score += Math.min(15, Object.keys(facts).length * 3);
+  $('statScore').textContent = Math.min(100, score) + '/100';
 }
 
 async function loadPolitician(personId, {push = true} = {}) {
@@ -495,6 +564,7 @@ async function loadPolitician(personId, {push = true} = {}) {
       }
     }
     if (profile.profileType === 'legislator') {
+      loadPoliticianIntelligence(profile.bioguideId, loadId);
       loadDisclosures(profile.bioguideId);
       loadLegislation('sponsored', true);
       loadLegislation('cosponsored', true);
@@ -525,6 +595,10 @@ function renderPolitician(profile) {
     $('officialWebsite').textContent = 'Official Website ↗';
   }
   $('whiteHouseBioCard').classList.add('hidden');
+  $('politicianBiographyCard').classList.add('hidden');
+  $('enactedLawsCard').classList.remove('hidden');
+  $('politicianScoreCard').classList.remove('hidden');
+  $('committeesCard').classList.remove('hidden');
   $('congressTimelineCard').classList.remove('hidden');
   $('disclosuresCard').classList.remove('hidden');
   $('sponsoredCard').classList.remove('hidden');
@@ -535,6 +609,7 @@ function renderPolitician(profile) {
     ['Total terms', profile.totalTerms], ['Bioguide ID', profile.bioguideId], ['Last Congress.gov update', profile.source.updatedAt ? date(profile.source.updatedAt) : null]
   ].filter(([, value]) => value !== null && value !== undefined && value !== '');
   $('politicianStats').innerHTML = stats.map(([label, value]) => `<div class="stat card"><div class="stat-label">${esc(label)}</div><div class="stat-value compact">${esc(display(value))}</div></div>`).join('');
+  renderPoliticianIdentityOverview(profile);
   renderTerms(profile.terms || [], profile.currentParty);
   renderPartyHistory(profile.partyHistory || []);
   renderPersonalDetails(profile);
@@ -555,6 +630,12 @@ function renderPolitician(profile) {
   $('disclosureTransactions').innerHTML = '';
   $('disclosureFilings').innerHTML = '';
   $('disclosuresSource').classList.add('hidden');
+  $('politicianScore').textContent = '—';
+  $('politicianScoreParts').innerHTML = '<div class="section-loading shimmer"></div>';
+  $('committeesCount').textContent = 'Loading…';
+  $('committees').innerHTML = '<div class="section-loading shimmer"></div>';
+  $('enactedLawsCount').textContent = 'Loading…';
+  $('enactedLaws').innerHTML = '<div class="section-loading shimmer"></div>';
 }
 
 function renderExecutiveProfile(profile) {
@@ -574,7 +655,12 @@ function renderExecutiveProfile(profile) {
   $('politicianStats').innerHTML = [
     ['Role / relationship', profile.role], ['Category', isFamily ? 'Presidential family' : 'Executive'], ['Source', 'WhiteHouse.gov']
   ].map(([label, value]) => `<div class="stat card"><div class="stat-label">${esc(label)}</div><div class="stat-value compact">${esc(value)}</div></div>`).join('');
+  $('politicianIdentityCard').classList.add('hidden');
   $('whiteHouseBioCard').classList.remove('hidden');
+  $('politicianBiographyCard').classList.add('hidden');
+  $('enactedLawsCard').classList.add('hidden');
+  $('politicianScoreCard').classList.add('hidden');
+  $('committeesCard').classList.add('hidden');
   $('whiteHouseBiography').innerHTML = (profile.biography || []).map(paragraph => `<p>${esc(paragraph)}</p>`).join('') || '<p class="empty-state">No official biography was published.</p>';
   $('congressTimelineCard').classList.add('hidden');
   $('disclosuresCard').classList.add('hidden');
@@ -595,6 +681,90 @@ function renderExecutiveProfile(profile) {
 
 function disclosedRange(range) {
   return range && range.min != null ? `${money(range.min)}–${money(range.max)}` : null;
+}
+
+async function loadPoliticianIntelligence(memberId, loadId) {
+  try {
+    const payload = await cachedApi(`/api/politicians/${encodeURIComponent(memberId)}/intelligence`, 24 * 60 * 60 * 1000, {session: true});
+    if (loadId !== pageLoadId || activePolitician !== memberId) return;
+    renderPoliticianIntelligence(payload);
+  } catch (_) {
+    if (loadId !== pageLoadId || activePolitician !== memberId) return;
+    $('politicianScoreParts').innerHTML = '<p class="empty-state">The extended record is temporarily unavailable.</p>';
+    $('committees').innerHTML = '<p class="empty-state">Committee assignments could not be loaded.</p>';
+    $('enactedLaws').innerHTML = '<p class="empty-state">Enacted-law details could not be loaded.</p>';
+  }
+}
+
+function renderPoliticianIntelligence(payload) {
+  const info = payload.intelligence || {}, directory = info.directory || {}, knowledge = payload.knowledge;
+  $('politicianScore').textContent = info.score == null ? '—' : info.score;
+  $('politicianScoreNote').textContent = info.scoreNote || 'Measures public-record breadth, not political quality.';
+  const partLabels = {service: 'Time in service', legislation: 'Sponsored legislation', enactedLaws: 'Enacted laws', committees: 'Committee work', recordCompleteness: 'Record completeness'};
+  $('politicianScoreParts').innerHTML = Object.entries(info.scoreParts || {}).map(([key, value]) => `<div class="score-part"><div><span>${esc(partLabels[key] || key)}</span><strong>${esc(value)} pts</strong></div><i><b style="width:${Math.min(100, Number(value) / ({service:20, legislation:25, enactedLaws:35, committees:15, recordCompleteness:5}[key] || 100) * 100)}%"></b></i></div>`).join('') || '<p class="empty-state">Not enough verified data to calculate this score.</p>';
+
+  const committees = directory.committees || [];
+  $('committeesCount').textContent = committees.length ? `${committees.length} assignments` : 'None current';
+  $('committees').innerHTML = committees.slice(0, 18).map(item => `<a class="committee-item" href="${esc(item.url || '#')}" ${item.url ? 'target="_blank" rel="noreferrer"' : ''}><div><strong>${esc(item.subcommittee || item.name)}</strong>${item.subcommittee ? `<span>${esc(item.name)}</span>` : ''}</div><em>${esc(item.title || 'Member')}</em></a>`).join('') || '<p class="empty-state">No current committee assignment was found. Former-member assignments are not inferred from the current directory.</p>';
+
+  const laws = info.enactedLaws || [];
+  $('enactedLawsCount').textContent = `${laws.length} found`;
+  $('enactedLaws').innerHTML = laws.map(item => `<a class="legislation-row enacted" href="${esc(item.officialUrl || '#')}" target="_blank" rel="noreferrer"><div class="bill-code">${esc(item.label)}</div><div><strong>${esc(item.title || 'Untitled legislation')}</strong><span>${esc(item.latestAction?.text || '')} · ${date(item.latestAction?.date)}</span></div><span class="law-badge">LAW</span></a>`).join('') || '<p class="empty-state">No sponsored measure marked as enacted was found in the loaded Congress.gov record.</p>';
+
+  if (knowledge) {
+    $('politicianBiographyTitle').textContent = knowledge.title || 'Biography';
+    $('politicianBiographySummary').textContent = knowledge.summary || '';
+    $('politicianBiographySource').href = knowledge.url;
+    renderFactGrid('politicianBiographyFacts', knowledge.facts || {});
+    $('politicianBiographyCard').classList.remove('hidden');
+  }
+  enrichPoliticianIdentityOverview(directory, knowledge?.facts || {});
+  const extraRows = [
+    ['Full birth date', directory.birthday ? date(directory.birthday) : null],
+    ['Gender', directory.gender === 'F' ? 'Female' : directory.gender === 'M' ? 'Male' : directory.gender],
+    ['Office', directory.office], ['Phone', directory.phone], ['Address', directory.address]
+  ].filter(([, value]) => value);
+  if (extraRows.length) $('personalDetails').innerHTML += extraRows.map(([label, value]) => `<div class="prov-row"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join('');
+}
+
+function identityFact(label, value, note = '') {
+  if (value === null || value === undefined || value === '') return '';
+  return `<div class="identity-fact"><span>${esc(label)}</span><strong>${esc(value)}</strong>${note ? `<small>${esc(note)}</small>` : ''}</div>`;
+}
+
+function renderPoliticianIdentityOverview(profile) {
+  activePoliticianProfile = profile;
+  $('politicianIdentityCard').classList.remove('hidden');
+  const district = profile.currentChamber === 'House' && profile.currentDistrict ? `District ${profile.currentDistrict}` : null;
+  $('politicianIdentityOverview').innerHTML = [
+    identityFact('Born', profile.birthYear || 'Loading full date…'),
+    identityFact('Party', profile.currentParty),
+    identityFact('Represents', [profile.currentState, district].filter(Boolean).join(' · ')),
+    identityFact('Chamber', profile.currentChamber),
+    identityFact('Years in Congress', profile.yearsInCongress),
+    identityFact('Status', profile.currentMember ? 'Current member' : 'Former member')
+  ].join('');
+  $('identityDataStatus').textContent = 'Loading biography details…';
+}
+
+function enrichPoliticianIdentityOverview(directory, facts) {
+  const profile = activePoliticianProfile || {};
+  const pick = label => (facts[label] || []).join(' · ');
+  const district = profile.currentChamber === 'House' && profile.currentDistrict ? `District ${profile.currentDistrict}` : null;
+  const detailed = [
+    identityFact('Full birth date', directory.birthday ? date(directory.birthday) : pick('Born')),
+    identityFact('Place of birth', pick('Place of birth')),
+    identityFact('Party', profile.currentParty),
+    identityFact('Represents', [profile.currentState, district].filter(Boolean).join(' · ')),
+    identityFact('Chamber', profile.currentChamber),
+    identityFact('Years in Congress', profile.yearsInCongress),
+    identityFact('Education', pick('Education')),
+    identityFact('Occupation', pick('Occupation')),
+    identityFact('Citizenship', pick('Citizenship')),
+    identityFact('Family', [pick('Spouse'), pick('Children')].filter(Boolean).join(' · '), pick('Spouse') && pick('Children') ? 'Spouse · children' : '')
+  ].filter(Boolean).join('');
+  if (detailed) $('politicianIdentityOverview').innerHTML = detailed;
+  $('identityDataStatus').textContent = detailed ? 'Congress.gov · Wikidata' : 'Congress.gov';
 }
 
 async function loadDisclosures(memberId) {
@@ -629,11 +799,7 @@ function renderDisclosures(data) {
   if (purchaseRange) cards.push(['Purchase range total', purchaseRange]);
   if (saleRange) cards.push(['Sale range total', saleRange]);
   $('disclosureSummary').innerHTML = cards.map(([label, value]) => `<div class="disclosure-stat"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join('');
-  $('disclosureTransactions').innerHTML = (data.transactions || []).map(tx => {
-    const kind = tx.transactionType === 'Purchase' ? 'buy' : tx.transactionType === 'Sale' ? 'sell' : 'other';
-    const filed = tx.notificationDate || tx.filingDate;
-    return `<article class="disclosure-row"><div class="disclosure-top-kind ${kind}">${esc(tx.transactionType || 'Other')}</div><div class="disclosure-asset"><div><strong>${esc(tx.asset || 'Unknown asset')}</strong>${tx.ticker ? `<em>${esc(tx.ticker)}</em>` : ''}</div><span>Owner: ${esc(tx.owner || 'Self')}</span></div><div class="disclosure-dates"><span>Trade <strong>${date(tx.transactionDate)}</strong></span><span>Filed / notified <strong>${date(filed)}</strong></span></div><div class="disclosure-amount"><strong>${esc(tx.amount?.label || 'Not disclosed')}</strong><span>Disclosed range</span></div><a class="official-disclosure" href="${esc(tx.source?.documentUrl || '#')}" target="_blank" rel="noreferrer"><span>${esc(tx.source?.badge || 'OFFICIAL DISCLOSURE')}</span>View filing ↗</a></article>`;
-  }).join('') || '<p class="empty-state">No PTR transactions were found in the official records searched. Members are not required to file a PTR when they have no reportable transactions.</p>';
+  $('disclosureTransactions').innerHTML = '';
   const annualCount = (data.annualReports || []).length;
   const ptrs = (data.filings || []).filter(item => item.reportType === 'PTR');
   $('disclosureFilings').innerHTML = ptrs.length || annualCount ? `<span>${ptrs.length} official PTR filing${ptrs.length === 1 ? '' : 's'} found${annualCount ? ` · ${annualCount} annual report${annualCount === 1 ? '' : 's'} indexed for future detail support` : ''}</span>` : '';

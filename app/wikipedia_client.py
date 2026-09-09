@@ -48,7 +48,13 @@ async def _fetch_knowledge(name: str, aliases: list[dict[str, Any]] | list[str])
         response.raise_for_status()
         pages = response.json().get("query", {}).get("pages", [])
 
-    return select_candidate(name, aliases, pages)
+    candidate = select_candidate(name, aliases, pages)
+    if candidate and candidate.get("wikidata_id"):
+        try:
+            candidate["facts"] = await _wikidata_facts(candidate["wikidata_id"])
+        except Exception:
+            candidate["facts"] = {}
+    return candidate
 
 
 def select_candidate(name: str, aliases: list[dict[str, Any]] | list[str], pages: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -76,12 +82,81 @@ def select_candidate(name: str, aliases: list[dict[str, Any]] | list[str], pages
             "source": "Wikipedia",
             "image_source": "Wikimedia Commons / Wikipedia" if image else None,
             "confidence": "high",
+            "wikidata_id": (page.get("pageprops") or {}).get("wikibase_item"),
             "evidence_signals": [
                 "Article title matches an SEC-reported legal-name form",
                 "The article lead repeats that SEC-reported name",
             ],
         }
     return None
+
+
+WIKIDATA_API = "https://www.wikidata.org/w/api.php"
+WIKIDATA_PROPERTIES = {
+    "P569": "Born",
+    "P19": "Place of birth",
+    "P27": "Citizenship",
+    "P69": "Education",
+    "P106": "Occupation",
+    "P108": "Employer",
+    "P39": "Positions held",
+    "P26": "Spouse",
+    "P40": "Children",
+    "P166": "Awards",
+}
+
+
+def _claim_value(claim: dict[str, Any]) -> tuple[str, str] | None:
+    value = (((claim.get("mainsnak") or {}).get("datavalue") or {}).get("value"))
+    if isinstance(value, dict) and value.get("id"):
+        return "entity", str(value["id"])
+    if isinstance(value, dict) and value.get("time"):
+        raw = str(value["time"]).lstrip("+")
+        precision = int(value.get("precision") or 9)
+        return "literal", raw[:10] if precision >= 11 else raw[:7] if precision == 10 else raw[:4]
+    if isinstance(value, str):
+        return "literal", value
+    return None
+
+
+async def _wikidata_facts(entity_id: str) -> dict[str, list[str]]:
+    params = {
+        "action": "wbgetentities", "ids": entity_id, "props": "claims", "format": "json",
+        "languages": "en", "languagefallback": 1,
+    }
+    headers = {"User-Agent": "Information Check System contact@example.com"}
+    async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+        response = await client.get(WIKIDATA_API, params=params, headers=headers)
+        response.raise_for_status()
+        entity = (response.json().get("entities") or {}).get(entity_id) or {}
+        claims = entity.get("claims") or {}
+        parsed: dict[str, list[tuple[str, str]]] = {}
+        entity_ids: set[str] = set()
+        for prop, label in WIKIDATA_PROPERTIES.items():
+            values = []
+            for claim in (claims.get(prop) or [])[:10]:
+                parsed_value = _claim_value(claim)
+                if not parsed_value:
+                    continue
+                values.append(parsed_value)
+                if parsed_value[0] == "entity":
+                    entity_ids.add(parsed_value[1])
+            if values:
+                parsed[label] = values
+        labels: dict[str, str] = {}
+        ids = sorted(entity_ids)
+        for start in range(0, len(ids), 50):
+            label_response = await client.get(WIKIDATA_API, params={
+                "action": "wbgetentities", "ids": "|".join(ids[start:start + 50]),
+                "props": "labels", "languages": "en", "languagefallback": 1, "format": "json",
+            }, headers=headers)
+            label_response.raise_for_status()
+            for key, value in (label_response.json().get("entities") or {}).items():
+                labels[key] = ((value.get("labels") or {}).get("en") or {}).get("value") or key
+    return {
+        label: list(dict.fromkeys(labels.get(value, value) if kind == "entity" else value for kind, value in values))[:8]
+        for label, values in parsed.items()
+    }
 
 
 def _natural_title_match(title: str, extract: str, accepted_names: set[str]) -> bool:

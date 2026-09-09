@@ -9,7 +9,7 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: CONGRESS_API_KEY
-        value: 8uHSEcMJ7Fv8yWQ4GUOM24ENLn85TGoq79GRgx83
+        sync: false
       - key: SEC_USER_AGENT
         value: "Information Check System doronenakache@gmail.com"
       - key: CIK_CACHE_HOURS
