@@ -398,6 +398,15 @@ class CongressClient:
             if hit['fetchedAt'] + 14400 < time.time():
                 snapshots.schedule('congress:' + bioguide, lambda: self.profile(bioguide))
             return {**hit['data'], 'status': 'ready', 'fetchedAt': hit['fetchedAt']}
+        # A direct profile URL should never wait for the complete member directory.
+        # Congress.gov can return one member in a single request; loading every page
+        # of /member is reserved for name search and is warmed independently.
+        if self.api_key:
+            try:
+                return {**await self.profile(bioguide), 'status': 'ready'}
+            except CongressError as error:
+                if error.status_code != 404:
+                    raise
         member = next((m for m in await self.member_index() if m['bioguideId'] == bioguide), None)
         if not member:
             raise CongressError('No congressional member found.', status_code=404)

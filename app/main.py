@@ -31,6 +31,9 @@ async def lifespan(app):
         # Keep the app available if SEC is temporarily unreachable; the normal search
         # path will retry and can still use a stale file when one exists.
         pass
+    # Warm the Congress name directory without delaying startup. Direct profile URLs
+    # use the one-member endpoint, so both search and deep links stay responsive.
+    snapshots.schedule("congress-index-warm", congress_client.member_index)
     yield
     await snapshots.close()
 

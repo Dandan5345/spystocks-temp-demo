@@ -121,6 +121,23 @@ async def test_client_parses_profile_and_never_places_key_in_url():
     assert "super-secret-test-key" not in json.dumps(result)
 
 
+@pytest.mark.asyncio
+async def test_overview_deep_link_fetches_one_member_not_full_index(monkeypatch):
+    client = CongressClient("test-key")
+
+    async def fake_profile(bioguide):
+        return {"bioguideId": bioguide, "name": "Jane Doe"}
+
+    async def index_must_not_run(*args, **kwargs):
+        raise AssertionError("deep link loaded the full member directory")
+
+    monkeypatch.setattr(client, "profile", fake_profile)
+    monkeypatch.setattr(client, "member_index", index_must_not_run)
+    result = await client.overview("D000001")
+    assert result["name"] == "Jane Doe"
+    assert result["status"] == "ready"
+
+
 def test_legislation_parsing_uses_true_pagination_total():
     result = normalize_legislation({
         "pagination": {"count": 199, "next": "https://api.congress.gov/v3/member/P000197/sponsored-legislation?offset=1"},
